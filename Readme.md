@@ -21,8 +21,7 @@ Open in browser: `localhost:3838/`
 
 ## Runing image from dockerhub (might not be latest code)
 ```
-docker pull crtahlin/swarm-network-stats
-docker run --rm -p 3838:3838 crtahlin/network-stats-shiny:latest
+docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:latest
 ```
 
 Open in browser: `localhost:3838/`
