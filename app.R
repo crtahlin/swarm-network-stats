@@ -7,9 +7,8 @@
 #    http://shiny.rstudio.com/
 #
 
+################## load needed libraries
 library(shiny)
-
-# load needed libraries
 library(httr)
 library(jsonlite)
 library(stringr)
@@ -21,31 +20,23 @@ library(forstringr)
 library(SwarmR)
 library(DescTools)
 
-
-################# NODES DATA
+################# load data from swarmscan.io
 # load data from swarmscan - nodes
 swarmscan_data <- load_swarmscan_data()
 ########### COUNTRY DATA
 # load data from swarmscan - countries
 swarmscan_countries <- load_swarmscan_countries()
 
-#################
+################# prepare data
 # extract data about nodes
 nodes_data <- swarmscan_data$nodes
-# add binary overlay address to the data set
+# calculate binary overlay address and add it to data
 nodes_data$overlay_binary <- sapply(nodes_data$overlay, FUN = hexadecimal2binary)
-# set default short overlay
-nodes_data$overlay_short <- first_n_places(nodes_data$overlay_binary, 8)
-# if unreachable column does not exist, fill it with NAs
+# if unreachable column does not exist, fill it with NAs (to avoid corner case)
 if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA} 
 
 
-##################
-# prepare table with data about nodes, to be explored 
-nodes_data[,c("overlay", "error")]
-error_list <- table(nodes_data[,"error"])
-
-##################
+################## APPLICATION
 
 # Define UI for application that draws a histogram
 ui <- fluidPage(
@@ -61,10 +52,10 @@ ui <- fluidPage(
         verbatimTextOutput("nodes_count"),
         plotOutput("distPlot"),
         verbatimTextOutput("explainer_text_1"),
-        verbatimTextOutput("nbhood_counts"),
         DT::dataTableOutput("stats_table"),
         DT::dataTableOutput("nodes_data"),
-        DT::dataTableOutput("reserveSizes"),
+        verbatimTextOutput("nbhood_counts"),
+        # DT::dataTableOutput("reserveSizes"),
 
         width = 10
       ),
@@ -82,7 +73,7 @@ ui <- fluidPage(
 server <- function(input, output) {
   
   ###############
-  # PREPARE THE DATA
+  # PREPARE THE DATA (reactive function)
   ###############
   # based on the storage radius set, take the first n chars of the overlay address and add to the data
   nodes_data_reactive <- reactive(
@@ -96,9 +87,7 @@ server <- function(input, output) {
         nodes_data <- nodes_data[nodes_data$fullNode, ]
         }
       return(nodes_data)
-    }
-  )
-  
+      })
   
   ###############
   # PREPARE THE PLOTS
@@ -118,8 +107,7 @@ server <- function(input, output) {
 
       # return plot
       return(plot)
-
-    })
+      })
     
     # Leaflet map
     output$leafletMap <- renderLeaflet({
@@ -166,21 +154,23 @@ server <- function(input, output) {
     #               buttons = c('copy', 'csv', 'excel'))
     )
     
-    output$reserveSizes <- DT::renderDataTable({
-      # browser()
-      storageRadiuses <- nodes_data_reactive()$statusSnapshot$storageRadius
-      reserveSizes <- nodes_data_reactive()$statusSnapshot$reserveSize
-      
-      mostCommonRadius <- Mode(storageRadiuses, na.rm = TRUE)
-      reservesForMostCommonRadius <- reserveSizes[which(storageRadiuses == mostCommonRadius)]
-      avgReserveSize <- mean(reservesForMostCommonRadius)
-      storageTakenTB <- (2 ^ mostCommonRadius) * (avgReserveSize * 4096)/(1024*1024*1024*1024) # in TBtes
-      storageUntilSplitTB <- (2 ^ mostCommonRadius) * ((2 ^ 22 - avgReserveSize)  * 4096)/(1024*1024*1024*1024) # in TBytes
-      
-      result <- data.frame(mostCommonRadius, avgReserveSize, storageTakenTB, storageUntilSplitTB)
-      
-      return(result)
-    })
+    # output$reserveSizes <- DT::renderDataTable({
+    #   # browser()
+    #   # TODO the reserveSize is no longer the proper endpoint/data for calculating storage taken
+    #   # some other endpoint will have to be used, once it is documented
+    #   storageRadiuses <- nodes_data_reactive()$statusSnapshot$storageRadius
+    #   reserveSizes <- nodes_data_reactive()$statusSnapshot$reserveSize
+    #   
+    #   mostCommonRadius <- Mode(storageRadiuses, na.rm = TRUE)
+    #   reservesForMostCommonRadius <- reserveSizes[which(storageRadiuses == mostCommonRadius)]
+    #   avgReserveSize <- mean(reservesForMostCommonRadius)
+    #   storageTakenTB <- (2 ^ mostCommonRadius) * (avgReserveSize * 4096)/(1024*1024*1024*1024) # in TBtes
+    #   storageUntilSplitTB <- (2 ^ mostCommonRadius) * ((2 ^ 22 - avgReserveSize)  * 4096)/(1024*1024*1024*1024) # in TBytes
+    #   
+    #   result <- data.frame(mostCommonRadius, avgReserveSize, storageTakenTB, storageUntilSplitTB)
+    #   
+    #   return(result)
+    # })
     
     # table of node counts per nbhood
     output$nbhood_counts <- renderPrint({
