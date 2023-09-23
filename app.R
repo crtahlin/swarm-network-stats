@@ -16,14 +16,11 @@ library(stringr)
 library(stringi)
 library(ggplot2)
 library(DT)
-# library(rworldmap)
 library(leaflet)
 library(forstringr)
 library(SwarmR)
 library(DescTools)
 
-# load supporting functions
-# source("Supporting-functions.r")
 
 ################# NODES DATA
 # load data from swarmscan - nodes
@@ -54,7 +51,7 @@ error_list <- table(nodes_data[,"error"])
 ui <- fluidPage(
 
     # Application title
-    titlePanel("Swarm nodes stats, ver 0.33"),
+    titlePanel("Swarm nodes stats, ver 0.34"),
 
     # Sidebar with a slider input for number of bins 
     sidebarLayout(
@@ -124,18 +121,6 @@ server <- function(input, output) {
 
     })
     
-    # nodes by country plot
-    # output$nodesByCountryPlot <- renderPlot({
-    #   plot <- mapCountryData(nodes_by_country,
-    #                          nameColumnToPlot="number", 
-    #                          catMethod="logFixedWidth",
-    #                          mapTitle = "Nodes per country",
-    #                          oceanCol = "white",
-    #                          addLegend = TRUE,
-    #                          aspect = 1)
-    #   return(plot)
-    # })
-    
     # Leaflet map
     output$leafletMap <- renderLeaflet({
       plot <- 
@@ -203,15 +188,6 @@ server <- function(input, output) {
       return(sort(table(overlayAsFactor)))
     })
     
-    # output$nbhoodTable <- DT::renderDataTable({
-    #   # output the table showing nodes in neighborhoods
-    #   return(nodes_stats_table)
-    # })
-    # 
-    # output$errorList <- DT::renderDataTable({
-    #   # output table showing types of errors
-    #   return(as.data.frame(error_list))
-    # })
     
     #############
     # PREPARE TEXT OUTPUT
