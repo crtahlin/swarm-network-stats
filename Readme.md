@@ -27,7 +27,11 @@ docker run --rm -p 3838:3838 crtahlin/network-stats-shiny:latest
 
 Open in browser: `localhost:3838/`
 
-# Instructions to push to dockerhub
+# Contributions
+
+Fork, improve, do a PR. No promises about response times. Thank you.
+
+# Instructions to push to dockerhub (to self)
 
 ```
 # Build
@@ -35,18 +39,23 @@ docker build -t network-stats-shiny .
 
 # Test
 docker run --rm -p 3838:3838 network-stats-shiny:latest
+localhost:3838/
 
 # Tag
 docker tag local-image:tagname new-repo:tagname
-docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:0.32
+docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:0.34
 
 # Push
 docker login -u crtahlin
-docker push crtahlin/swarm-network-stats:0.32
+docker push crtahlin/swarm-network-stats:0.34
+# and / or just latest
+docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:latest
+docker push crtahlin/swarm-network-stats:latest
 
 # Test
-# docker run --rm -p 3838:3838 crtahlin/network-stats-shiny:latest
-docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:0.32
+docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:0.34
+localhost:3838/
+docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:latest
 localhost:3838/
 ``` 
 
