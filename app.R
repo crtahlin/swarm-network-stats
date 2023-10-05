@@ -42,7 +42,7 @@ if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
 ui <- fluidPage(
 
     # Application title
-    titlePanel("Swarm nodes stats, ver 0.34"),
+    titlePanel("Swarm nodes stats, ver 0.35"),
 
     # Sidebar with a slider input for number of bins 
     sidebarLayout(
@@ -147,8 +147,19 @@ server <- function(input, output) {
     # table of all the data
     output$nodes_data <- DT::renderDataTable({
       # browser()
-      return(nodes_data_reactive()[, c("overlay_short","overlay_short_next", "overlay", "error", "unreachable" 
-                                       )])
+      nodes_info <- nodes_data_reactive()[, 
+                                          c("overlay_short",
+                                            "overlay_short_next",
+                                            "overlay",
+                                            "error",
+                                            "unreachable",
+                                            "fullNode"
+                                            )]
+      # add info about country from location list
+      nodes_info$location <- nodes_data_reactive()$location$country
+      
+      # return table with info
+      return(nodes_info)
     } #, server = TRUE, extensions = c("Buttons"), 
     #options = list(dom = 'Bfrtip',
     #               buttons = c('copy', 'csv', 'excel'))
