@@ -19,6 +19,7 @@ library(leaflet)
 library(forstringr)
 library(SwarmR)
 library(DescTools)
+library(dplyr)
 
 ################# load data from swarmscan.io
 # load data from swarmscan - nodes
@@ -52,6 +53,7 @@ ui <- fluidPage(
         verbatimTextOutput("nodes_count"),
         plotOutput("distPlot"),
         verbatimTextOutput("explainer_text_1"),
+        DT::dataTableOutput("reachability_status"),
         DT::dataTableOutput("stats_table"),
         DT::dataTableOutput("nodes_data"),
         verbatimTextOutput("nbhood_counts"),
@@ -169,6 +171,21 @@ server <- function(input, output) {
     #options = list(dom = 'Bfrtip',
     #               buttons = c('copy', 'csv', 'excel'))
     )
+    
+    # table of reachability
+    output$reachability_status <- DT::renderDataTable({
+      # browser()
+      
+      reachability_table <- 
+        nodes_data_reactive() %>% 
+        # select(overlay, lastCheckTimeUTC) %>% 
+        group_by(overlay) %>% # slice_max(lastCheckTimeUTC) %>% slice_head(n=1) %>% 
+        group_by(fullNode, statusSnapshot$isReachable) %>%  # , statusSnapshot.beeMode
+        summarise(count = n())
+      
+      return(reachability_table)
+    })
+    
     
     # output$reserveSizes <- DT::renderDataTable({
     #   # browser()
