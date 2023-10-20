@@ -26,6 +26,10 @@ docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:latest
 
 Open in browser: `localhost:3838/`
 
+## Troubleshooting
+
+The image is built for AMD/Intel architectures, so if you have an ARM Mac, go to the settings in your Docker Desktop and set to use Rosetta emulation. Otherwise it does not seem to work. Probably does not work on other ARM systems.
+
 # Contributions
 
 Fork, improve, do a PR. No promises about response times. Thank you.
