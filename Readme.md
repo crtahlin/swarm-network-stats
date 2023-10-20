@@ -41,18 +41,18 @@ docker run --rm -p 3838:3838 network-stats-shiny:latest
 localhost:3838/
 
 # Tag
-docker tag local-image:tagname new-repo:tagname
-docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:0.34
+# docker tag local-image:tagname new-repo:tagname
+docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:0.36
+docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:latest
 
 # Push
 docker login -u crtahlin
-docker push crtahlin/swarm-network-stats:0.34
+docker push crtahlin/swarm-network-stats:0.36
 # and / or just latest
-docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:latest
 docker push crtahlin/swarm-network-stats:latest
 
 # Test
-docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:0.34
+docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:0.36
 localhost:3838/
 docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:latest
 localhost:3838/
