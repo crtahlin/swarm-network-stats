@@ -42,7 +42,7 @@ if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
 ui <- fluidPage(
 
     # Application title
-    titlePanel("Swarm nodes stats, ver 0.35"),
+    titlePanel("Swarm nodes stats, ver 0.36"),
 
     # Sidebar with a slider input for number of bins 
     sidebarLayout(
@@ -85,7 +85,8 @@ server <- function(input, output) {
       if (input$onlyFullNodes) {
         nodes_data <- nodes_data[!is.na(nodes_data$fullNode), ]
         nodes_data <- nodes_data[nodes_data$fullNode, ]
-        }
+      }
+      # browser()
       return(nodes_data)
       })
   
@@ -97,12 +98,16 @@ server <- function(input, output) {
     output$distPlot <- renderPlot({
       # output the distribution by neighborhoods
       # browser()
+      
+      # remove data if not longitude and latitude is present
+      nodes_data <- nodes_data_reactive()[-(is.na(nodes_data$location$latitude) | is.na(nodes_data$location$latitude)), ]
+      
       plot <-
-        ggplot(data = nodes_data_reactive(), aes(x = overlay_short)) +
+        ggplot(data = nodes_data, aes(x = overlay_short)) +
         geom_bar() +
-        geom_hline(yintercept = mean(table(nodes_data_reactive()$overlay_short))) +
-        geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data_reactive()$error) , ], fill = "yellow", width = 1) +
-        geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data_reactive()$unreachable) , ], fill = "red", width = 1) +
+        geom_hline(yintercept = mean(table(nodes_data$overlay_short))) +
+        geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data$error) , ], fill = "yellow", width = 1) +
+        geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data$unreachable) , ], fill = "red", width = 1) +
         theme(axis.text.x=element_text(angle = -90, hjust = 0)) 
 
       # return plot
@@ -130,12 +135,12 @@ server <- function(input, output) {
       error_stats_per_nbhood <- 
         cbind( 
           Freq = table(Freq=nodes_data_reactive()$overlay_short),
-          Freq.unreachable = table(nodes_data_reactive()$overlay_short, Freq.unreachable=nodes_data_reactive()$unreachable)[,1],
+          # Freq.unreachable = table(nodes_data_reactive()$overlay_short, Freq.unreachable=nodes_data_reactive()$unreachable)[,1],
           Freq.error = table(nodes_data_reactive()$overlay_short, Freq.error=nodes_data_reactive()$error_logical)[, 1]
         )
       error_stats_per_nbhood <- as.data.frame(error_stats_per_nbhood)
       error_stats_per_nbhood$Percent.error <- (error_stats_per_nbhood$Freq.error / error_stats_per_nbhood$Freq)*100
-      error_stats_per_nbhood$Percent.unreachable <- (error_stats_per_nbhood$Freq.unreachable / error_stats_per_nbhood$Freq)*100
+      # error_stats_per_nbhood$Percent.unreachable <- (error_stats_per_nbhood$Freq.unreachable / error_stats_per_nbhood$Freq)*100
       return(error_stats_per_nbhood)
       
       # as.data.frame(table(nodes_data_reactive()$overlay_short))
