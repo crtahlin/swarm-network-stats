@@ -43,7 +43,7 @@ ui <-
     # settings part
     sidebar = sidebar("Settings",
                       numericInput("storageRadius", "Storage radius",
-                                   value = 10, min = 1, max = 16, step = 1),
+                                   value = 11, min = 1, max = 16, step = 1),
                       numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
                                    value = 2, min = 1, max = 8),
                       checkboxInput("onlyFullNodes", "Show only full nodes",
@@ -57,23 +57,31 @@ ui <-
     nav_panel("Data", 
               "Estimated total amount of stored data in TB",
               verbatimTextOutput("storage_taken"),
-              "Number of nodes",
-              verbatimTextOutput("nodes_count")), 
-    ###
-    nav_panel("Neighbourhoods", 
-              "Count of nodes per neighbourhood",
-              plotOutput("distPlot", height = "800px"),
-              br(),
-              textOutput("explainer_text_1")),
+              "Maximum storage radius with set minimum required nodes per neighbourhood",
+              verbatimTextOutput("max_radius"),
+              "Maximum capacity of storage with set minimum required nodes per neighbourhood in TB",
+              verbatimTextOutput("max_capacity")
+              ), 
+    
     ### 
     nav_panel("Reachability",
               "Reachability of nodes",
               DT::dataTableOutput("reachability_status")),
-    ###
-    nav_panel("Nbhood counts",
-              "Nodes per neighborhood, sorted by least numerous based on selected radius",
-              DT::dataTableOutput("nbhood_counts")),
     
+    ###
+    nav_panel("Nbhood plot", 
+              "Number of nodes",
+              verbatimTextOutput("nodes_count"),
+              "Count of nodes per neighbourhood",
+              plotOutput("distPlot", height = "800px"),
+              br(),
+              textOutput("explainer_text_1")),
+
+    # ###
+    # nav_panel("Nbhood counts",
+    #           "Nodes per neighborhood, sorted by least numerous based on selected radius",
+    #           DT::dataTableOutput("nbhood_counts")),
+ 
     ###
     nav_panel("Nbhoods stats",
               "Neighborhoods statistics",
@@ -126,7 +134,8 @@ server <- function(input, output) {
       geom_hline(yintercept = mean(table(nodes_data$overlay_short))) +
       geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data$error) , ], fill = "yellow", width = 1) +
       geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data$unreachable) , ], fill = "red", width = 1) +
-      theme(axis.text.x=element_text(angle = -90, hjust = 0)) 
+      theme(axis.text.x=element_text(angle = -90, hjust = 0)) +
+      labs(y = "Node count", x = "Neighbourhood")
     
     # return plot
     return(plot)
@@ -211,14 +220,36 @@ server <- function(input, output) {
     return(data.frame(sort(table(overlayAsFactor)) ))
   }, colnames = c("Neighbourhood", "Count"), rownames = FALSE)
   
-  # reactive table of node counts per nbhood
-  nodes_per_nbhood <- reactive({
-    overlayAsFactor <- 
-      factor( x = nodes_data_reactive()$overlay_short,
-              levels = generate_short_overlay(radius = input$storageRadius) )
-    return(sort(table(overlayAsFactor)))
+  # reactive function finding max storage capacity
+  max_capacity_radius <- reactive({
+    for(i in 1:100){ # go up to radius 100 if needed
+      # calculate how many nodes in smallest nbhood
+      # browser()
+      smallest_nbhood_count <- min(table(first_n_places(nodes_data_reactive()$overlay_binary, i))) 
+      if (smallest_nbhood_count == input$minNodesPerNbhood) {radius <- i} 
+      if (smallest_nbhood_count < input$minNodesPerNbhood) {radius <- i - 1} 
+      if (smallest_nbhood_count <= input$minNodesPerNbhood) break 
+    }
+    
+  # return storage radius with required minimum number of nodes
+    return(storageRadius = radius)
   })  
   
+  # return max radius
+  output$max_radius <- renderPrint({
+    
+    return(max_capacity_radius())
+  })
+  
+  
+  # return max capacity as text
+  output$max_capacity <- renderPrint({   
+    max_capacity <- 2 ^ 22 * 4096 * (2 ^ max_capacity_radius()) / (1024 * 1024 * 1024 * 1024)
+    
+    return(max_capacity)
+    
+    })
+   
   
   #############
   # PREPARE TEXT OUTPUT
