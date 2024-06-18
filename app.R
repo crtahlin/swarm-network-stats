@@ -28,7 +28,7 @@ library(bslib)
 swarmscan_data <- load_swarmscan_data()
 ########### COUNTRY DATA
 # load data from swarmscan - countries
-swarmscan_countries <- load_swarmscan_countries()
+# swarmscan_countries <- load_swarmscan_countries()
 
 ################# prepare data
 # extract data about nodes
@@ -43,68 +43,52 @@ if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
 
 ui <- 
   page_navbar(
-  sidebar = sidebar("Settings",
+  # settings part
+    sidebar = sidebar("Settings",
                     numericInput("storageRadius", "Storage radius",
                                  value = 10, min = 1, max = 16, step = 1),
+                    numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
+                                 value = 2, min = 1, max = 8),
                     checkboxInput("onlyFullNodes", "Show only full nodes",
                                   value = TRUE)),
+  # panels part
+  ###
   nav_panel("Map", 
             "Map of nodes",
             leafletOutput("leafletMap", height = "800px")),
+  ###
   nav_panel("Data", 
             "Estimated total amount of stored data in TB",
             verbatimTextOutput("storage_taken"),
             "Number of nodes",
-            verbatimTextOutput("nodes_count")),          
+            verbatimTextOutput("nodes_count")), 
+  ###
   nav_panel("Neighbourhoods", 
             "Count of nodes per neighbourhood",
-            plotOutput("distPlot", height = "800px")),
-  nav_panel("Other",
-            "other",
-            verbatimTextOutput("explainer_text_1"),
+            plotOutput("distPlot", height = "800px"),
+            br(),
+            textOutput("explainer_text_1")),
+  ### 
+  nav_panel("Reachability",
             "Reachability of nodes",
-            DT::dataTableOutput("reachability_status"),
-            DT::dataTableOutput("stats_table"),
-            "Data about individual nodes",
-            DT::dataTableOutput("nodes_data"),
-            verbatimTextOutput("nbhood_counts"),
-            DT::dataTableOutput("reserveSizes"))#,
-  # nav_panel("Another panel", "Another text",
-  #          textOutput("storage_taken"))
+            DT::dataTableOutput("reachability_status")),
+  ###
+  nav_panel("Nbhood counts",
+            "Nodes per neighborhood, sorted by least numerous based on selected radius",
+            DT::dataTableOutput("nbhood_counts")),
+  
+  ###
+  nav_panel("Nbhoods stats",
+            "Neighborhoods statistics",
+            DT::dataTableOutput("stats_table")),
+  
+  ###
+  nav_panel("Nodes info",
+            "Individual nodes statistics",
+            DT::dataTableOutput("nodes_data"))
+  
+  
   )
-
-
-# # Define UI for application that draws a histogram
-# ui <- fluidPage(
-# 
-#     # Application title
-#     titlePanel("Swarm nodes stats, ver 0.36"),
-# 
-#     # Sidebar with a slider input for number of bins 
-#     sidebarLayout(
-#       # Show a plot of the generated distribution
-#       mainPanel(
-#         leafletOutput("leafletMap", height = "800px"),
-#         verbatimTextOutput("nodes_count"),
-#         plotOutput("distPlot"),
-#         verbatimTextOutput("explainer_text_1"),
-#         DT::dataTableOutput("reachability_status"),
-#         DT::dataTableOutput("stats_table"),
-#         DT::dataTableOutput("nodes_data"),
-#         verbatimTextOutput("nbhood_counts"),
-#         # DT::dataTableOutput("reserveSizes"),
-# 
-#         width = 10
-#       ),
-#       sidebarPanel(
-#             # checkboxInput("show_nodes_w_errors", "Show nodes with any errors", value = TRUE),
-#             # checkboxInput("show_unreachable_nodes", "Show unreachable nodes", value = TRUE)
-#         numericInput("storageRadius", "Storage radius", value = 10, min = 1, max = 16, step = 1),
-#         checkboxInput("onlyFullNodes", "Show only full nodes", value = TRUE),
-#         width = 2
-#          )
-#       )
-#     )
 
 # Define server logic required to draw a histogram
 server <- function(input, output) {
@@ -209,15 +193,13 @@ server <- function(input, output) {
     
     # table of reachability
     output$reachability_status <- DT::renderDataTable({
-      # browser()
-      
       reachability_table <- 
         nodes_data_reactive() %>% 
-        # select(overlay, lastCheckTimeUTC) %>% 
-        group_by(overlay) %>% # slice_max(lastCheckTimeUTC) %>% slice_head(n=1) %>% 
-        group_by(fullNode, statusSnapshot$isReachable) %>%  # , statusSnapshot.beeMode
+        group_by(overlay) %>%  
+        group_by(fullNode, statusSnapshot$isReachable) %>%
         summarise(count = n())
       
+      # return table
       return(reachability_table)
     })
     
@@ -241,12 +223,22 @@ server <- function(input, output) {
     # })
     
     # table of node counts per nbhood
-    output$nbhood_counts <- renderPrint({
-      overlayAsFactor <- factor(x = nodes_data_reactive()$overlay_short, levels = generate_short_overlay(radius = input$storageRadius) )
-      return(sort(table(overlayAsFactor)))
+    output$nbhood_counts <- DT::renderDataTable({
+      overlayAsFactor <- 
+        factor( x = nodes_data_reactive()$overlay_short,
+                levels = generate_short_overlay(radius = input$storageRadius) )
+      return(matrix(sort(table(overlayAsFactor)) ))
     })
     
+    # reactive table of node counts per nbhood
+    nodes_per_nbhood <- reactive({
+      overlayAsFactor <- 
+        factor( x = nodes_data_reactive()$overlay_short,
+                levels = generate_short_overlay(radius = input$storageRadius) )
+      return(sort(table(overlayAsFactor)))
+    })  
     
+
     #############
     # PREPARE TEXT OUTPUT
     #############
@@ -266,10 +258,7 @@ server <- function(input, output) {
     # Calculate amount of storage on Swarm
     ##############
     output$storage_taken <- renderPrint({  
-      # browser()
-      # tmp <- head(nodes_data)
-      # nodes_data
-      
+
       # Save reserve within radius and radius to data frame
       storage_data <- data.frame(
       reserveWithinRadius = nodes_data$statusSnapshot$reserveSizeWithinRadius,
@@ -278,15 +267,13 @@ server <- function(input, output) {
       # Remove empty lines (NA or 0)
       tmp <- storage_data[!(is.na(storage_data$reserveWithinRadius) | 
                      is.na(storage_data$storageradius)), ]
-      tmp2 <- tmp[!(tmp$reserveWithinRadius == 0 | 
+      clean_storage_data <- tmp[!(tmp$reserveWithinRadius == 0 | 
                               tmp$storageradius == 0), ]
-      clean_storage_data <- tmp2
       
       # Sum up all the storage data and take the average
       bytesStored <- (clean_storage_data$reserveWithinRadius * 4096) * 
         (2 ^ clean_storage_data$storageradius)
     
-      
       # Take median value
       medianBytesStored <- median(bytesStored)
       
@@ -296,8 +283,8 @@ server <- function(input, output) {
       # return value
       return(medianTBStored)
       })
-    
 }
 
+########################################
 # Run the application 
 shinyApp(ui = ui, server = server)
