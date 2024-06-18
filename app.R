@@ -20,6 +20,8 @@ library(forstringr)
 library(SwarmR)
 library(DescTools)
 library(dplyr)
+library(bslib)
+
 
 ################# load data from swarmscan.io
 # load data from swarmscan - nodes
@@ -39,37 +41,45 @@ if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
 
 ################## APPLICATION
 
-# Define UI for application that draws a histogram
-ui <- fluidPage(
+ui <- 
+  page_navbar(
+  sidebar = sidebar("Sidebar"),
+  nav_panel("Page 1", "Page 1 content"),
+  nav_panel("Page 2", "Page 2 content")
+)
 
-    # Application title
-    titlePanel("Swarm nodes stats, ver 0.36"),
 
-    # Sidebar with a slider input for number of bins 
-    sidebarLayout(
-      # Show a plot of the generated distribution
-      mainPanel(
-        leafletOutput("leafletMap", height = "800px"),
-        verbatimTextOutput("nodes_count"),
-        plotOutput("distPlot"),
-        verbatimTextOutput("explainer_text_1"),
-        DT::dataTableOutput("reachability_status"),
-        DT::dataTableOutput("stats_table"),
-        DT::dataTableOutput("nodes_data"),
-        verbatimTextOutput("nbhood_counts"),
-        # DT::dataTableOutput("reserveSizes"),
-
-        width = 10
-      ),
-      sidebarPanel(
-            # checkboxInput("show_nodes_w_errors", "Show nodes with any errors", value = TRUE),
-            # checkboxInput("show_unreachable_nodes", "Show unreachable nodes", value = TRUE)
-        numericInput("storageRadius", "Storage radius", value = 10, min = 1, max = 16, step = 1),
-        checkboxInput("onlyFullNodes", "Show only full nodes", value = TRUE),
-        width = 2
-         )
-      )
-    )
+# # Define UI for application that draws a histogram
+# ui <- fluidPage(
+# 
+#     # Application title
+#     titlePanel("Swarm nodes stats, ver 0.36"),
+# 
+#     # Sidebar with a slider input for number of bins 
+#     sidebarLayout(
+#       # Show a plot of the generated distribution
+#       mainPanel(
+#         leafletOutput("leafletMap", height = "800px"),
+#         verbatimTextOutput("nodes_count"),
+#         plotOutput("distPlot"),
+#         verbatimTextOutput("explainer_text_1"),
+#         DT::dataTableOutput("reachability_status"),
+#         DT::dataTableOutput("stats_table"),
+#         DT::dataTableOutput("nodes_data"),
+#         verbatimTextOutput("nbhood_counts"),
+#         # DT::dataTableOutput("reserveSizes"),
+# 
+#         width = 10
+#       ),
+#       sidebarPanel(
+#             # checkboxInput("show_nodes_w_errors", "Show nodes with any errors", value = TRUE),
+#             # checkboxInput("show_unreachable_nodes", "Show unreachable nodes", value = TRUE)
+#         numericInput("storageRadius", "Storage radius", value = 10, min = 1, max = 16, step = 1),
+#         checkboxInput("onlyFullNodes", "Show only full nodes", value = TRUE),
+#         width = 2
+#          )
+#       )
+#     )
 
 # Define server logic required to draw a histogram
 server <- function(input, output) {
