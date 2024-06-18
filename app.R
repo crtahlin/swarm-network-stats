@@ -7,7 +7,7 @@
 #    http://shiny.rstudio.com/
 #
 
-################## load needed libraries
+################## load libraries
 library(shiny)
 library(httr)
 library(jsonlite)
@@ -43,10 +43,35 @@ if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
 
 ui <- 
   page_navbar(
-  sidebar = sidebar("Sidebar"),
-  nav_panel("Page 1", "Page 1 content"),
-  nav_panel("Page 2", "Page 2 content")
-)
+  sidebar = sidebar("Settings",
+                    numericInput("storageRadius", "Storage radius",
+                                 value = 10, min = 1, max = 16, step = 1),
+                    checkboxInput("onlyFullNodes", "Show only full nodes",
+                                  value = TRUE)),
+  nav_panel("Map", 
+            "Map of nodes",
+            leafletOutput("leafletMap", height = "800px")),
+  nav_panel("Data", 
+            "Estimated total amount of stored data in TB",
+            verbatimTextOutput("storage_taken"),
+            "Number of nodes",
+            verbatimTextOutput("nodes_count")),          
+  nav_panel("Neighbourhoods", 
+            "Count of nodes per neighbourhood",
+            plotOutput("distPlot", height = "800px")),
+  nav_panel("Other",
+            "other",
+            verbatimTextOutput("explainer_text_1"),
+            "Reachability of nodes",
+            DT::dataTableOutput("reachability_status"),
+            DT::dataTableOutput("stats_table"),
+            "Data about individual nodes",
+            DT::dataTableOutput("nodes_data"),
+            verbatimTextOutput("nbhood_counts"),
+            DT::dataTableOutput("reserveSizes"))#,
+  # nav_panel("Another panel", "Another text",
+  #          textOutput("storage_taken"))
+  )
 
 
 # # Define UI for application that draws a histogram
@@ -236,6 +261,41 @@ server <- function(input, output) {
       print("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting error (could be benign); red : unreachable nodes (could be benign). NOTE: If a neighbourhood has no nodes, it is not shown on graph!")
       
     })
+    
+    ##############
+    # Calculate amount of storage on Swarm
+    ##############
+    output$storage_taken <- renderPrint({  
+      # browser()
+      # tmp <- head(nodes_data)
+      # nodes_data
+      
+      # Save reserve within radius and radius to data frame
+      storage_data <- data.frame(
+      reserveWithinRadius = nodes_data$statusSnapshot$reserveSizeWithinRadius,
+      storageradius = nodes_data$statusSnapshot$storageRadius)
+      
+      # Remove empty lines (NA or 0)
+      tmp <- storage_data[!(is.na(storage_data$reserveWithinRadius) | 
+                     is.na(storage_data$storageradius)), ]
+      tmp2 <- tmp[!(tmp$reserveWithinRadius == 0 | 
+                              tmp$storageradius == 0), ]
+      clean_storage_data <- tmp2
+      
+      # Sum up all the storage data and take the average
+      bytesStored <- (clean_storage_data$reserveWithinRadius * 4096) * 
+        (2 ^ clean_storage_data$storageradius)
+    
+      
+      # Take median value
+      medianBytesStored <- median(bytesStored)
+      
+      # Convert to TBytes
+      medianTBStored <- medianBytesStored / (1024 * 1024 * 1024 * 1024)
+      
+      # return value
+      return(medianTBStored)
+      })
     
 }
 
