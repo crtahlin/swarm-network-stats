@@ -161,11 +161,15 @@ server <- function(input, output) {
   # table of counts per bins
   output$stats_table <- DT::renderDataTable({
     # TODO: sometimes there are no unreachable nodes and the app crashes bcs of that; do a more robust merge of data 
+    overlayAsFactor <-
+      factor( x = nodes_data_reactive()$overlay_short,
+              levels = generate_short_overlay(radius = input$storageRadius) )
+
     error_stats_per_nbhood <- 
       cbind( 
-        Freq = table(Freq=nodes_data_reactive()$overlay_short),
+        Freq = table(Freq=overlayAsFactor),
         # Freq.unreachable = table(nodes_data_reactive()$overlay_short, Freq.unreachable=nodes_data_reactive()$unreachable)[,1],
-        Freq.error = table(nodes_data_reactive()$overlay_short, Freq.error=nodes_data_reactive()$error_logical)[, 1]
+        Freq.error = table(overlayAsFactor, Freq.error=nodes_data_reactive()$error_logical)[, 1]
       )
     error_stats_per_nbhood <- as.data.frame(error_stats_per_nbhood)
     error_stats_per_nbhood$Percent.error <- (error_stats_per_nbhood$Freq.error / error_stats_per_nbhood$Freq)*100
@@ -212,13 +216,14 @@ server <- function(input, output) {
   )
   
   
-  # table of node counts per nbhood
-  output$nbhood_counts <- DT::renderDataTable({
-    overlayAsFactor <- 
-      factor( x = nodes_data_reactive()$overlay_short,
-              levels = generate_short_overlay(radius = input$storageRadius) )
-    return(data.frame(sort(table(overlayAsFactor)) ))
-  }, colnames = c("Neighbourhood", "Count"), rownames = FALSE)
+  # # table of node counts per nbhood
+  # output$nbhood_counts <- DT::renderDataTable({
+  #   browser()
+  #   overlayAsFactor <- 
+  #     factor( x = nodes_data_reactive()$overlay_short,
+  #             levels = generate_short_overlay(radius = input$storageRadius) )
+  #   return(data.frame(sort(table(overlayAsFactor, useNA = "always")) ))
+  # }, colnames = c("Neighbourhood", "Count"), rownames = FALSE)
   
   # reactive function finding max storage capacity
   max_capacity_radius <- reactive({
