@@ -139,8 +139,10 @@ server <- function(input, output) {
       ggplot(data = nodes_data, aes(x = overlay_short)) +
       geom_bar() +
       geom_hline(yintercept = mean(table(nodes_data$overlay_short))) +
-      geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data$error) , ], fill = "yellow", width = 1) +
-      geom_bar(data = nodes_data_reactive()[ !is.na(nodes_data$unreachable) , ], fill = "red", width = 1) +
+      # yellow: nodes with an error in either error field (same rule as the Nbhoods stats table);
+      # red: unreachable nodes, drawn on top. Both subsets come from the plotted data, so rows line up
+      geom_bar(data = nodes_data[nodes_data$error_logical, ], fill = "yellow", width = 1) +
+      geom_bar(data = nodes_data[!is.na(nodes_data$unreachable), ], fill = "red", width = 1) +
       theme(axis.text.x=element_text(angle = -90, hjust = 0)) +
       labs(y = "Node count", x = "Neighbourhood")
     
@@ -277,7 +279,7 @@ server <- function(input, output) {
   })
   
   output$explainer_text_1 <- renderPrint({
-    print("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting error (could be benign); red : unreachable nodes (could be benign). NOTE: If a neighbourhood has no nodes, it is not shown on graph!")
+    print("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). NOTE: If a neighbourhood has no nodes, it is not shown on graph!")
     
   })
   
