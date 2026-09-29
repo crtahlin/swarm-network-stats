@@ -139,10 +139,11 @@ server <- function(input, output) {
       ggplot(data = nodes_data, aes(x = overlay_short)) +
       geom_bar() +
       geom_hline(yintercept = mean(table(nodes_data$overlay_short))) +
-      # yellow: nodes with an error in either error field (same rule as the Nbhoods stats table);
+      # yellow: nodes with an error in either error field (same rule as the Nbhoods stats table),
+      # plus unreachable nodes, so the yellow visible above red is always reachable nodes with an error;
       # red: unreachable nodes, drawn on top. Both subsets come from the plotted data, so rows line up
-      geom_bar(data = nodes_data[nodes_data$error_logical, ], fill = "yellow", width = 1) +
-      geom_bar(data = nodes_data[!is.na(nodes_data$unreachable), ], fill = "red", width = 1) +
+      geom_bar(data = nodes_data[nodes_data$error_logical | nodes_data$unreachable %in% TRUE, ], fill = "yellow", width = 1) +
+      geom_bar(data = nodes_data[nodes_data$unreachable %in% TRUE, ], fill = "red", width = 1) +
       theme(axis.text.x=element_text(angle = -90, hjust = 0)) +
       labs(y = "Node count", x = "Neighbourhood")
     
