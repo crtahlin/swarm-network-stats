@@ -131,8 +131,8 @@ server <- function(input, output) {
   output$distPlot <- renderPlot({
     # output the distribution by neighborhoods
 
-    # remove data if not longitude and latitude is present
-    nodes_data <- nodes_data_reactive()[-(is.na(nodes_data$location$latitude) | is.na(nodes_data$location$latitude)), ]
+    # all nodes count towards their nbhood, with or without a known location (same as the Nbhoods stats table)
+    nodes_data <- nodes_data_reactive()
     
     # generate plot
     plot <-
