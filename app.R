@@ -185,7 +185,11 @@ server <- function(input, output) {
         Freq.error = as.vector(error_counts),
         row.names = names(node_counts)
       )
-    error_stats_per_nbhood$Percent.error <- (error_stats_per_nbhood$Freq.error / error_stats_per_nbhood$Freq)*100
+    # an empty nbhood has no error percentage; NA shows as an empty cell and keeps the column numeric for sorting
+    error_stats_per_nbhood$Percent.error <-
+      ifelse(error_stats_per_nbhood$Freq > 0,
+             (error_stats_per_nbhood$Freq.error / error_stats_per_nbhood$Freq)*100,
+             NA)
 
     return(error_stats_per_nbhood)
     
