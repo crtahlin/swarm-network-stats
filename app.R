@@ -33,7 +33,13 @@ nodes_data <- swarmscan_data$nodes
 # calculate binary overlay address and add it to data
 nodes_data$overlay_binary <- sapply(nodes_data$overlay, FUN = hexadecimal2binary)
 # if unreachable column does not exist, fill it with NAs (to avoid corner case)
-if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA} 
+if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
+
+# TRUE where a string field is present and not empty; a missing field gives FALSE
+has_text <- function(x) {
+  if (is.null(x)) return(FALSE)
+  !is.na(x) & nchar(x) > 0
+}
 
 
 ### APPLICATION
@@ -104,7 +110,8 @@ server <- function(input, output) {
   nodes_data_reactive <- reactive({
     nodes_data$overlay_short <- first_n_places(nodes_data$overlay_binary, input$storageRadius)
     nodes_data$overlay_short_next <- str_right( first_n_places(nodes_data$overlay_binary, (input$storageRadius + 1)), 1 )
-    nodes_data$error_logical <- nchar(nodes_data$error)>0 # set TRUE if string found in error field
+    # set TRUE if an error string is found in the top-level or the status snapshot error field
+    nodes_data$error_logical <- has_text(nodes_data$error) | has_text(nodes_data$statusSnapshot$error)
     
     # if user sets to only display full nodes, filter out the rest
     if (input$onlyFullNodes) {
@@ -160,18 +167,21 @@ server <- function(input, output) {
   
   # table of counts per bins
   output$stats_table <- DT::renderDataTable({
-    # TODO: sometimes there are no unreachable nodes and the app crashes bcs of that; do a more robust merge of data 
     overlayAsFactor <-
       factor( x = nodes_data_reactive()$overlay_short,
               levels = generate_short_overlay(radius = input$storageRadius) )
 
-    error_stats_per_nbhood <- 
-      cbind( 
-        Freq = table(Freq=overlayAsFactor),
-        # Freq.unreachable = table(nodes_data_reactive()$overlay_short, Freq.unreachable=nodes_data_reactive()$unreachable)[,1],
-        Freq.error = table(overlayAsFactor, Freq.error=nodes_data_reactive()$error_logical)[, 1]
+    # count nodes and nodes with errors per nbhood; subsetting a factor keeps all levels,
+    # so both counts cover every nbhood even when no node has an error
+    node_counts <- table(overlayAsFactor)
+    error_counts <- table(overlayAsFactor[nodes_data_reactive()$error_logical])
+
+    error_stats_per_nbhood <-
+      data.frame(
+        Freq = as.vector(node_counts),
+        Freq.error = as.vector(error_counts),
+        row.names = names(node_counts)
       )
-    error_stats_per_nbhood <- as.data.frame(error_stats_per_nbhood)
     error_stats_per_nbhood$Percent.error <- (error_stats_per_nbhood$Freq.error / error_stats_per_nbhood$Freq)*100
 
     return(error_stats_per_nbhood)
