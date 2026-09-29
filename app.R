@@ -241,7 +241,11 @@ server <- function(input, output) {
   # reactive function finding max storage capacity
   max_capacity_radius <- reactive({
     # an empty or zero minimum would break the comparison or never end the loop
-    req(input$minNodesPerNbhood >= 1)
+    # (shiny:: is needed because library(jsonlite) masks shiny's validate)
+    shiny::validate(shiny::need(isTRUE(input$minNodesPerNbhood >= 1), "Enter a minimum of 1 or more nodes per nbhood."))
+    # radius 0 is a single nbhood holding every node; if even that is too small, no radius works
+    shiny::validate(shiny::need(nrow(nodes_data_reactive()) >= input$minNodesPerNbhood,
+                  "There are fewer nodes than the minimum per nbhood, so no radius has enough nodes."))
 
     # node count of the smallest nbhood at radius r; there are 2^r nbhoods, so if fewer
     # of them appear in the data, at least one is empty and the smallest count is 0
