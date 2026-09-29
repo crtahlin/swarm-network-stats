@@ -240,18 +240,29 @@ server <- function(input, output) {
   
   # reactive function finding max storage capacity
   max_capacity_radius <- reactive({
-    for(i in 1:100){ # go up to radius 100 if needed
-      # calculate how many nodes in smallest nbhood
-      # browser()
-      smallest_nbhood_count <- min(table(first_n_places(nodes_data_reactive()$overlay_binary, i))) 
-      if (smallest_nbhood_count == input$minNodesPerNbhood) {radius <- i} 
-      if (smallest_nbhood_count < input$minNodesPerNbhood) {radius <- i - 1} 
-      if (smallest_nbhood_count <= input$minNodesPerNbhood) break 
+    # an empty or zero minimum would break the comparison or never end the loop
+    # (shiny:: is needed because library(jsonlite) masks shiny's validate)
+    shiny::validate(shiny::need(isTRUE(input$minNodesPerNbhood >= 1), "Enter a minimum of 1 or more nodes per nbhood."))
+    # radius 0 is a single nbhood holding every node; if even that is too small, no radius works
+    shiny::validate(shiny::need(nrow(nodes_data_reactive()) >= input$minNodesPerNbhood,
+                  "There are fewer nodes than the minimum per nbhood, so no radius has enough nodes."))
+
+    # node count of the smallest nbhood at radius r; there are 2^r nbhoods, so if fewer
+    # of them appear in the data, at least one is empty and the smallest count is 0
+    smallest_nbhood_count <- function(r) {
+      counts <- table(first_n_places(nodes_data_reactive()$overlay_binary, r))
+      if (length(counts) < 2^r) 0 else min(counts)
     }
-    
-  # return storage radius with required minimum number of nodes
+
+    # largest radius at which every nbhood has at least the required minimum number of nodes
+    radius <- 0
+    while (radius < 256 && smallest_nbhood_count(radius + 1) >= input$minNodesPerNbhood) {
+      radius <- radius + 1
+    }
+
+    # return storage radius with required minimum number of nodes
     return(storageRadius = radius)
-  })  
+  })
   
   # return max radius
   output$max_radius <- renderPrint({
