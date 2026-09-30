@@ -26,13 +26,15 @@ library(bslib)
 ### load data from swarmscan.io
 swarmscan_dump_url <- "https://api.swarmscan.io/v1/network/dump"
 refresh_interval_secs <- 10 * 60  # download new data this often
-retry_interval_secs <- 60         # after a failed download, try again this soon
+retry_interval_secs <- 60         # after a failed download with no data yet, try again this soon
+retry_with_data_secs <- 5 * 60    # after a failed refresh while older data is shown, try again this soon
+download_timeout_secs <- 20       # the download normally takes 1-2 s; a hanging server blocks every session until this runs out
 current_time <- function() Sys.time()
 
 # download the network dump; stops with a readable message on a network error,
 # a non-200 response, or a response that does not contain the nodes table
 fetch_swarmscan_data <- function() {
-  response <- httr::GET(swarmscan_dump_url, httr::timeout(60))
+  response <- httr::GET(swarmscan_dump_url, httr::timeout(download_timeout_secs))
   if (httr::status_code(response) != 200) {
     stop("swarmscan answered with HTTP status ", httr::status_code(response))
   }
@@ -118,9 +120,10 @@ prepare_nodes_data <- function(swarmscan_data) {
 ### shared data cache
 # one copy of the data for all sessions of this R process. refresh_swarm_cache() downloads new
 # data when it is due; if a download or its preparation fails, the last good data is kept and
-# the download is retried after retry_interval_secs. version changes only when new data arrives
+# the download is retried (every minute with no data, every 5 minutes with older data shown).
+# version changes only when new data arrives
 swarm_cache <- new.env()
-swarm_cache$data <- NULL          # list(raw = downloaded dump, nodes = prepared nodes table)
+swarm_cache$data <- NULL          # list(counts = swarmscan's node counts, nodes = prepared nodes table)
 swarm_cache$version <- 0
 swarm_cache$fetched_at <- NULL
 swarm_cache$last_attempt <- NULL
@@ -133,11 +136,13 @@ refresh_swarm_cache <- function() {
     swarm_cache$last_attempt <- now
     result <- tryCatch({
       raw <- fetch_swarmscan_data()
-      list(raw = raw, nodes = prepare_nodes_data(raw))
+      # keep only what the app reads, so the raw nodes table is not held twice
+      list(counts = list(count = raw$count, unreachableCount = raw$unreachableCount),
+           nodes = prepare_nodes_data(raw))
     }, error = function(e) e)
     if (inherits(result, "error")) {
       swarm_cache$last_error <- conditionMessage(result)
-      swarm_cache$next_attempt <- now + retry_interval_secs
+      swarm_cache$next_attempt <- now + if (is.null(swarm_cache$data)) retry_interval_secs else retry_with_data_secs
     } else {
       swarm_cache$data <- result
       swarm_cache$fetched_at <- now
@@ -159,7 +164,8 @@ data_status_text <- function() {
                    ". Refreshed every ", refresh_interval_secs / 60, " minutes.")
   if (!is.null(swarm_cache$last_error)) {
     status <- paste0(status, " The last refresh failed at ", stamp(swarm_cache$last_attempt),
-                     " (", swarm_cache$last_error, "), so the data shown is older.")
+                     " (", swarm_cache$last_error, "), so the data shown is older. Next attempt at ",
+                     stamp(swarm_cache$next_attempt), ".")
   }
   status
 }
@@ -231,9 +237,14 @@ server <- function(input, output, session) {
   ###############
   # PREPARE THE DATA (reactive function)
   ###############
-  # check once a minute whether new data is due; outputs recompute only when new data arrives
+  # check once a minute whether new data is due; outputs recompute only when new data arrives.
+  # while there is no data yet, every failed attempt also counts as a change, so the
+  # "no data" message below always shows the latest error
   swarm_data_polled <- reactivePoll(60 * 1000, session,
-                                    checkFunc = refresh_swarm_cache,
+                                    checkFunc = function() {
+                                      version <- refresh_swarm_cache()
+                                      if (is.null(swarm_cache$data)) paste(version, format(swarm_cache$last_attempt)) else version
+                                    },
                                     valueFunc = function() swarm_cache$data)
 
   # the current data; until the first download succeeds, outputs show why there is no data
@@ -443,8 +454,8 @@ server <- function(input, output, session) {
   
   # info on total and unreachable nodes
   output$nodes_count <- renderPrint({
-    print(paste("Total nodes:", swarm_data()$raw$count))
-    print(paste("Unreachable nodes:", swarm_data()$raw$unreachableCount))
+    print(paste("Total nodes:", swarm_data()$counts$count))
+    print(paste("Unreachable nodes:", swarm_data()$counts$unreachableCount))
   })
   
   output$explainer_text_1 <- renderPrint({
