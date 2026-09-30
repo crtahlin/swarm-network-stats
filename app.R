@@ -192,11 +192,11 @@ ui <-
               leafletOutput("leafletMap", height = "800px")),
     ###
     nav_panel("Data", 
-              "Estimated total amount of stored data in TB",
+              "Estimated total amount of stored data in TiB (2^40 bytes)",
               verbatimTextOutput("storage_taken"),
               "Maximum storage radius with set minimum required nodes per neighbourhood",
               verbatimTextOutput("max_radius"),
-              "Maximum capacity of storage with set minimum required nodes per neighbourhood in TB",
+              "Maximum capacity of storage with set minimum required nodes per neighbourhood in TiB (2^40 bytes)",
               verbatimTextOutput("max_capacity")
               ), 
     
@@ -487,11 +487,11 @@ server <- function(input, output, session) {
     # Take median value
     medianBytesStored <- median(bytesStored)
     
-    # Convert to TBytes
-    medianTBStored <- medianBytesStored / (1024 * 1024 * 1024 * 1024)
+    # Convert to TiB (2^40 bytes)
+    medianTiBStored <- medianBytesStored / (1024 * 1024 * 1024 * 1024)
     
     # return value
-    return(medianTBStored)
+    return(medianTiBStored)
   })
 }
 
