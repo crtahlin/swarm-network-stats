@@ -41,6 +41,59 @@ has_text <- function(x) {
   !is.na(x) & nchar(x) > 0
 }
 
+# TRUE for IPv4 addresses reachable on the public internet (not private, loopback, link-local, CGNAT or multicast)
+is_public_ip4 <- function(ip) {
+  vapply(strsplit(ip, ".", fixed = TRUE), function(o) {
+    o <- suppressWarnings(as.integer(o))
+    if (length(o) != 4 || anyNA(o)) return(FALSE)
+    !(o[1] %in% c(0, 10, 127) || o[1] >= 224 ||
+        (o[1] == 172 && o[2] >= 16 && o[2] <= 31) || (o[1] == 192 && o[2] == 168) ||
+        (o[1] == 169 && o[2] == 254) || (o[1] == 100 && o[2] >= 64 && o[2] <= 127))
+  }, logical(1))
+}
+
+# TRUE for IPv6 addresses reachable on the public internet (not loopback, unique local, link-local, multicast or IPv4-mapped)
+is_public_ip6 <- function(ip) {
+  ip <- tolower(ip)
+  !is.na(ip) & grepl(":", ip, fixed = TRUE) &
+    !(ip %in% c("::", "::1") | grepl("^(fc|fd|fe[89ab]|ff)", ip) | startsWith(ip, "::ffff:"))
+}
+
+# public IP addresses of one node, taken from its underlay multiaddresses (/ip4/<address>/... or /ip6/<address>/...)
+public_ips <- function(underlays) {
+  if (is.null(underlays) || NROW(underlays) == 0) return(character(0))
+  parts <- strsplit(underlays$address, "/", fixed = TRUE)
+  family <- vapply(parts, `[`, "", 2)
+  ip <- vapply(parts, `[`, "", 3)
+  keep <- (family %in% "ip4" & is_public_ip4(ip)) | (family %in% "ip6" & is_public_ip6(ip))
+  unique(ip[keep])
+}
+
+# swarmscan gives nodes it failed to geolocate the placeholder location 0,0 with no country,
+# which would put them in the ocean off West Africa; treat it as missing
+country <- if (is.null(nodes_data$location$country)) rep(NA, nrow(nodes_data)) else nodes_data$location$country
+placeholder <- !is.na(nodes_data$location$latitude) & nodes_data$location$latitude == 0 &
+  nodes_data$location$longitude == 0 & is.na(country)
+nodes_data$location$latitude[placeholder] <- NA
+nodes_data$location$longitude[placeholder] <- NA
+nodes_data$location_source <- ifelse(is.na(nodes_data$location$latitude), NA, "swarmscan")
+
+# the same public IP is often located for one node and not for another, so borrow the location
+# from a located node that shares a public IP; private addresses (e.g. Docker's 172.17.0.1) are
+# shared by unrelated nodes and are never used. If candidates differ, the most common location wins
+node_ips <- lapply(nodes_data$underlays, public_ips)
+located <- which(!is.na(nodes_data$location$latitude))
+ip_rows <- data.frame(ip = unlist(node_ips[located]), row = rep(located, lengths(node_ips[located])))
+location_key <- do.call(paste, c(nodes_data$location, sep = "|"))
+for (i in which(is.na(nodes_data$location$latitude))) {
+  candidates <- ip_rows$row[ip_rows$ip %in% node_ips[[i]]]
+  if (length(candidates) == 0) next
+  keys <- location_key[candidates]
+  best <- candidates[match(names(which.max(table(keys))), keys)]
+  nodes_data$location[i, ] <- nodes_data$location[best, ]
+  nodes_data$location_source[i] <- "same IP"
+}
+
 
 ### APPLICATION
 ### UI part
@@ -58,6 +111,7 @@ ui <-
     ###
     nav_panel("Map", 
               "Map of nodes",
+              textOutput("map_note"),
               leafletOutput("leafletMap", height = "800px")),
     ###
     nav_panel("Data", 
@@ -151,6 +205,13 @@ server <- function(input, output) {
     return(plot)
   })
   
+  # how many shown nodes have a borrowed location, and how many are left off the map
+  output$map_note <- renderText({
+    shown <- nodes_data_reactive()
+    sprintf("Locations of %d nodes are taken from another node with the same public IP address. %d nodes have no known location and are not shown.",
+            sum(shown$location_source %in% "same IP"), sum(is.na(shown$location$latitude)))
+  })
+
   # Leaflet map plot
   output$leafletMap <- renderLeaflet({
     # generate plot
