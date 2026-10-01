@@ -381,13 +381,15 @@ server <- function(input, output, session) {
       unreachable = column(shown[["unreachable"]]),
       fullNode = column(shown[["fullNode"]]),
       # add info about country from location list
-      location = column(shown[["location"]][["country"]])
+      location = column(shown[["location"]][["country"]]),
+      # "swarmscan", or "same IP" when the location was borrowed from another node with that public IP
+      location_source = column(shown[["location_source"]])
     )
 
     # return table with info
     return(nodes_info)
   },
-  colnames = c("Neighbourhood", "Next bit", "Overlay", "Error", "Status error", "Unreachable", "Full node", "Location"),
+  colnames = c("Neighbourhood", "Next bit", "Overlay", "Error", "Status error", "Unreachable", "Full node", "Location", "Location source"),
   rownames = FALSE 
   )
   
