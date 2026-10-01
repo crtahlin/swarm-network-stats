@@ -222,6 +222,9 @@ ui <-
     ###
     nav_panel("Nbhoods stats",
               "Neighborhoods statistics",
+              p("A node counts as an error node when swarmscan reports an error contacting it, or an error ",
+                "fetching its status (the Error and Status error columns on the Nodes info tab). Most status ",
+                "errors are \"peer not found\", meaning swarmscan could not fetch the status, and can be benign."),
               DT::dataTableOutput("stats_table")),
     
     ###
@@ -363,21 +366,28 @@ server <- function(input, output, session) {
   
   # table of all the data
   output$nodes_data <- DT::renderDataTable({
-    nodes_info <- nodes_data_reactive()[, 
-                                        c("overlay_short",
-                                          "overlay_short_next",
-                                          "overlay",
-                                          "error",
-                                          "unreachable",
-                                          "fullNode"
-                                        )]
-    # add info about country from location list
-    nodes_info$location <- nodes_data_reactive()$location$country
-    
+    shown <- nodes_data_reactive()
+    # a field swarmscan leaves out entirely shows as an empty column instead of breaking the table.
+    # [[ ]] matches names exactly: $ would partially match a missing "error" to "error_logical"
+    column <- function(x) if (is.null(x)) rep(NA, nrow(shown)) else x
+
+    # both error fields are shown, because the Nbhoods stats table counts a node with either one
+    nodes_info <- data.frame(
+      overlay_short = shown[["overlay_short"]],
+      overlay_short_next = shown[["overlay_short_next"]],
+      overlay = shown[["overlay"]],
+      error = column(shown[["error"]]),
+      status_error = column(shown[["statusSnapshot"]][["error"]]),
+      unreachable = column(shown[["unreachable"]]),
+      fullNode = column(shown[["fullNode"]]),
+      # add info about country from location list
+      location = column(shown[["location"]][["country"]])
+    )
+
     # return table with info
     return(nodes_info)
   },
-  colnames = c("Neighbourhood", "Next bit", "Overlay", "Error", "Unreachable", "Full node", "Location"),
+  colnames = c("Neighbourhood", "Next bit", "Overlay", "Error", "Status error", "Unreachable", "Full node", "Location"),
   rownames = FALSE 
   )
   
