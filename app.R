@@ -45,8 +45,12 @@ fetch_swarmscan_data <- function() {
   data
 }
 
-# a number as page text: thousands separator and at most two decimals, e.g. 4,693 or 7.32
-format_number <- function(x) format(round(x, 2), big.mark = ",", scientific = FALSE, trim = TRUE)
+# a number as page text: thousands separator and at most two decimals, e.g. 4,693 or 7.32;
+# values below 1 keep 3 significant digits, so 16 GiB shows as 0.0156 TiB rather than 0.02
+format_number <- function(x) {
+  x <- ifelse(abs(x) < 1, signif(x, 3), round(x, 2))
+  format(x, big.mark = ",", scientific = FALSE, trim = TRUE, drop0trailing = TRUE)
+}
 
 # TRUE where a string field is present and not empty; a missing field gives FALSE
 has_text <- function(x) {
