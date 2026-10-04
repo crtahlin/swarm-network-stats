@@ -178,14 +178,73 @@ data_status_text <- function() {
 }
 
 
+### LOOK AND FEEL
+# dark slate, orange and mint, after the colours of ethswarm.org (not an exact copy).
+# Space Grotesk for text; JetBrains Mono for labels, figures, tables and overlay bit strings.
+# The fonts load from Google Fonts in the browser, so the server needs no font files
+swarm_colours <- list(
+  bg = "#0d1216", surface = "#151c22", line = "#2d3843", text = "#e7eaee", muted = "#8b909a",
+  orange = "#ff6b26", mint = "#14fec0",
+  bars = "#5b6b7a", error = "#f2c14e", unreachable = "#ff4d5e"  # plot: grey, yellow, red
+)
+mono_font <- font_google("JetBrains Mono", local = FALSE)
+swarm_theme <- bs_theme(
+  version = 5,
+  bg = swarm_colours$bg, fg = swarm_colours$text,
+  primary = swarm_colours$orange, secondary = swarm_colours$line, success = swarm_colours$mint,
+  base_font = font_google("Space Grotesk", local = FALSE),
+  heading_font = mono_font, code_font = mono_font,
+  "border-color" = swarm_colours$line
+)
+swarm_css <- paste0("
+  :root { --mono: 'JetBrains Mono', ui-monospace, monospace; }
+  .navbar { border-bottom: 1px solid ", swarm_colours$line, "; }
+  .navbar-brand { font-family: var(--mono); letter-spacing: 0.04em; }
+  .navbar-brand .hex { color: ", swarm_colours$orange, "; margin-right: 0.4em; }
+  .navbar .nav-link { font-family: var(--mono); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; }
+  .navbar .nav-link.active { color: ", swarm_colours$orange, " !important; box-shadow: inset 0 -2px 0 ", swarm_colours$orange, "; }
+  .bslib-sidebar-layout > .sidebar { background: ", swarm_colours$surface, "; border-right: 1px solid ", swarm_colours$line, "; }
+  .sidebar-title, .section-label { font-family: var(--mono); font-size: 0.75rem; text-transform: uppercase;
+                                   letter-spacing: 0.1em; color: ", swarm_colours$muted, "; margin: 0.25rem 0 0.75rem; }
+  .section-label::before { content: '> '; color: ", swarm_colours$orange, "; }
+  #data_status, #map_note { font-family: var(--mono); font-size: 0.8rem; color: ", swarm_colours$muted, "; }
+  #nodes_count { font-family: var(--mono); font-weight: bold; color: ", swarm_colours$mint, "; margin-bottom: 1em; }
+  .bslib-value-box { background: ", swarm_colours$surface, " !important; border: 1px solid ", swarm_colours$line, "; }
+  .bslib-value-box .value-box-title { font-family: var(--mono); font-size: 0.8rem; text-transform: uppercase;
+                                      letter-spacing: 0.08em; color: ", swarm_colours$muted, "; }
+  .bslib-value-box .value-box-value { font-family: var(--mono); color: ", swarm_colours$mint, "; }
+  .bslib-value-box .value-box-value .shiny-output-error-validation { font-size: 0.9rem; color: ", swarm_colours$error, "; }
+  .bslib-value-box p { font-size: 0.8rem; color: ", swarm_colours$muted, "; }
+  table.dataTable, .dataTables_wrapper { font-family: var(--mono); font-size: 0.8rem; }
+  .table { --bs-table-striped-bg: rgba(139, 144, 154, 0.07); --bs-table-hover-bg: rgba(255, 107, 38, 0.10); }
+  #explainer_text_1 { font-size: 0.85rem; color: ", swarm_colours$muted, "; }
+  .marker-cluster-small, .marker-cluster-medium, .marker-cluster-large { background-color: rgba(255, 107, 38, 0.25); }
+  .marker-cluster-small div, .marker-cluster-medium div, .marker-cluster-large div {
+    background-color: rgba(255, 107, 38, 0.85); color: ", swarm_colours$bg, "; font-family: var(--mono); font-weight: bold; }
+")
+
+# the same look for the neighbourhood plot (R graphics use the system's monospace font)
+swarm_plot_theme <- theme(
+  plot.background = element_rect(fill = swarm_colours$bg, colour = NA),
+  panel.background = element_rect(fill = swarm_colours$surface, colour = NA),
+  panel.grid.major = element_line(colour = swarm_colours$line),
+  panel.grid.minor = element_blank(),
+  text = element_text(size = 14),
+  axis.text = element_text(colour = "#aab2bc", family = "mono", size = 11),
+  axis.title = element_text(colour = swarm_colours$text, family = "mono", size = 13),
+  axis.ticks = element_line(colour = swarm_colours$line)
+)
+
+
 ### APPLICATION
 ### UI part
 ui <- 
   page_navbar(
-    # the figures under each heading stand out from it
-    header = tags$style("#storage_taken, #max_radius, #max_capacity, #nodes_count { font-weight: bold; margin-bottom: 1em; }"),
+    title = span(span(class = "hex", HTML("&#x2B22;")), "swarm network stats"),
+    theme = swarm_theme,
+    header = tags$style(HTML(swarm_css)),
     # settings part
-    sidebar = sidebar("Settings",
+    sidebar = sidebar(title = "Settings",
                       numericInput("storageRadius", "Storage radius",
                                    value = 11, min = 1, max = 16, step = 1),
                       numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
@@ -196,29 +255,33 @@ ui <-
     # panels part
     ###
     nav_panel("Map", 
-              "Map of nodes",
+              div(class = "section-label", "Map of nodes"),
               textOutput("map_note"),
               leafletOutput("leafletMap", height = "800px")),
     ###
     nav_panel("Data", 
-              "Estimated total amount of stored data in TiB (2^40 bytes)",
-              textOutput("storage_taken"),
-              "Maximum storage radius with set minimum required nodes per neighbourhood",
-              textOutput("max_radius"),
-              "Maximum capacity of storage with set minimum required nodes per neighbourhood in TiB (2^40 bytes)",
-              textOutput("max_capacity")
+              div(class = "section-label", "Storage on the network"),
+              layout_column_wrap(
+                width = 1/3, fill = FALSE,
+                value_box(title = "Stored data", value = textOutput("storage_taken"),
+                          p("Estimated total amount of stored data, in TiB (2^40 bytes)")),
+                value_box(title = "Maximum storage radius", value = textOutput("max_radius"),
+                          p("With the set minimum required nodes per neighbourhood")),
+                value_box(title = "Maximum capacity", value = textOutput("max_capacity"),
+                          p("Of storage at that radius, in TiB (2^40 bytes)"))
+              )
               ), 
     
     ### 
     nav_panel("Reachability",
-              "Reachability of nodes",
+              div(class = "section-label", "Reachability of nodes"),
               DT::dataTableOutput("reachability_status")),
     
     ###
     nav_panel("Nbhood plot", 
-              "Number of nodes",
+              div(class = "section-label", "Number of nodes"),
               textOutput("nodes_count"),
-              "Count of nodes per neighbourhood",
+              div(class = "section-label", "Count of nodes per neighbourhood"),
               plotOutput("distPlot", height = "800px"),
               br(),
               textOutput("explainer_text_1")),
@@ -230,7 +293,7 @@ ui <-
  
     ###
     nav_panel("Nbhoods stats",
-              "Neighborhoods statistics",
+              div(class = "section-label", "Neighbourhoods statistics"),
               p("A node counts as an error node when swarmscan reports an error contacting it, or an error ",
                 "fetching its status (the Error and Status error columns on the Nodes info tab). Most status ",
                 "errors are \"peer not found\", meaning swarmscan could not fetch the status, and can be benign."),
@@ -238,7 +301,7 @@ ui <-
     
     ###
     nav_panel("Nodes info",
-              "Individual nodes statistics",
+              div(class = "section-label", "Individual nodes statistics"),
               DT::dataTableOutput("nodes_data"))
   )
 
@@ -306,13 +369,14 @@ server <- function(input, output, session) {
     # generate plot
     plot <-
       ggplot(data = nodes_data, aes(x = overlay_short)) +
-      geom_bar() +
-      geom_hline(yintercept = mean(table(nodes_data$overlay_short))) +
+      geom_bar(fill = swarm_colours$bars) +
+      geom_hline(yintercept = mean(table(nodes_data$overlay_short)), colour = swarm_colours$mint, linetype = "dashed") +
       # yellow: nodes with an error in either error field (same rule as the Nbhoods stats table),
       # plus unreachable nodes, so the yellow visible above red is always reachable nodes with an error;
       # red: unreachable nodes, drawn on top. Both subsets come from the plotted data, so rows line up
-      geom_bar(data = nodes_data[nodes_data$error_logical | nodes_data$unreachable %in% TRUE, ], fill = "yellow", width = 1) +
-      geom_bar(data = nodes_data[nodes_data$unreachable %in% TRUE, ], fill = "red", width = 1) +
+      geom_bar(data = nodes_data[nodes_data$error_logical | nodes_data$unreachable %in% TRUE, ], fill = swarm_colours$error, width = 1) +
+      geom_bar(data = nodes_data[nodes_data$unreachable %in% TRUE, ], fill = swarm_colours$unreachable, width = 1) +
+      swarm_plot_theme +
       theme(axis.text.x=element_text(angle = -90, hjust = 0)) +
       labs(y = "Node count", x = "Neighbourhood")
     
@@ -332,9 +396,12 @@ server <- function(input, output, session) {
     # generate plot
     plot <- 
       leaflet() %>% 
-      addTiles() %>%
+      # Esri's dark grey base map; CARTO's dark tiles now need an API key
+      addTiles(urlTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+               attribution = "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ", options = tileOptions(maxZoom = 16)) %>%
       # addAwesomeMarkers(lat = nodes_data$location$latitude, lng = nodes_data$location$longitude) %>%
-      addMarkers(clusterOptions = markerClusterOptions(), lat = nodes_data_reactive()$location$latitude, lng = nodes_data_reactive()$location$longitude)
+      addCircleMarkers(clusterOptions = markerClusterOptions(), lat = nodes_data_reactive()$location$latitude, lng = nodes_data_reactive()$location$longitude,
+                       radius = 5, stroke = FALSE, fillColor = swarm_colours$orange, fillOpacity = 0.9)
     
     # return plot
     return(plot)
