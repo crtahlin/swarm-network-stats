@@ -67,6 +67,8 @@ overlay_to_bits <- function(overlay, hex_digits = 16) {
 # 2^radius numbers on every call
 nbhood_name_cache <- new.env()
 nbhood_names <- function(radius) {
+  # 2^radius names are built and kept, so the radius must stay small (the input allows 1 to 16)
+  stopifnot(length(radius) == 1, radius %in% 0:16)
   key <- as.character(radius)
   if (is.null(nbhood_name_cache[[key]])) {
     names <- ""
@@ -397,6 +399,9 @@ server <- function(input, output, session) {
 
   # based on the storage radius set, take the first n chars of the overlay address and add to the data
   nodes_data_reactive <- reactive({
+    # the input's max = 16 is not enforced on typed values, and outputs build 2^radius
+    # nbhood names, so only whole radii from 1 to 16 are accepted
+    shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
     nodes_data <- swarm_data()$nodes
     nodes_data$overlay_short <- first_n_places(nodes_data$overlay_binary, input$storageRadius)
     nodes_data$overlay_short_next <- str_right( first_n_places(nodes_data$overlay_binary, (input$storageRadius + 1)), 1 )
