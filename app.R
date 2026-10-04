@@ -96,28 +96,44 @@ prepare_nodes_data <- function(swarmscan_data) {
   # if unreachable column does not exist, fill it with NAs (to avoid corner case)
   if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
 
-  # swarmscan gives nodes it failed to geolocate the placeholder location 0,0 with no country,
-  # which would put them in the ocean off West Africa; treat it as missing
-  country <- if (is.null(nodes_data$location$country)) rep(NA, nrow(nodes_data)) else nodes_data$location$country
-  placeholder <- !is.na(nodes_data$location$latitude) & nodes_data$location$latitude == 0 &
-    nodes_data$location$longitude == 0 & is.na(country)
-  nodes_data$location$latitude[placeholder] <- NA
-  nodes_data$location$longitude[placeholder] <- NA
-  nodes_data$location_source <- ifelse(is.na(nodes_data$location$latitude), NA, "swarmscan")
+  # the location table; [[ ]] matches names exactly, because $ would partially match a missing
+  # "location" to the "location_source" column added below. A dump without any location gets an
+  # all-missing table, so the map and the Nodes info tab still work
+  location <- nodes_data[["location"]]
+  if (!is.data.frame(location)) location <- data.frame(row.names = seq_len(nrow(nodes_data)))
+  # missing fields are added with the right type: the map needs numeric coordinates even when all are missing
+  field_or_na <- function(field) if (is.null(location[[field]])) NA else location[[field]]
+  for (field in c("latitude", "longitude")) location[[field]] <- as.numeric(field_or_na(field))
+  for (field in c("country", "city")) location[[field]] <- as.character(field_or_na(field))
+  
+  # swarmscan gives nodes it failed to geolocate the placeholder location 0,0 with no (or an empty)
+  # country, which would put them in the ocean off West Africa; treat it as missing, and treat a
+  # location with only one of the two coordinates as missing too
+  no_country <- is.na(location$country) | location$country == ""
+  placeholder <- !is.na(location$latitude) & !is.na(location$longitude) &
+    location$latitude == 0 & location$longitude == 0 & no_country
+  unusable <- placeholder | is.na(location$latitude) | is.na(location$longitude)
+  location$latitude[unusable] <- NA
+  location$longitude[unusable] <- NA
+  location$country[no_country] <- NA
+  nodes_data[["location"]] <- location
+  nodes_data$location_source <- ifelse(is.na(location$latitude), NA, "swarmscan")
 
   # the same public IP is often located for one node and not for another, so borrow the location
   # from a located node that shares a public IP; private addresses (e.g. Docker's 172.17.0.1) are
   # shared by unrelated nodes and are never used. If candidates differ, the most common location wins
-  node_ips <- lapply(nodes_data$underlays, public_ips)
-  located <- which(!is.na(nodes_data$location$latitude))
+  underlays <- nodes_data[["underlays"]]
+  if (is.null(underlays)) underlays <- vector("list", nrow(nodes_data))
+  node_ips <- lapply(underlays, public_ips)
+  located <- which(!is.na(location$latitude))
   ip_rows <- data.frame(ip = unlist(node_ips[located]), row = rep(located, lengths(node_ips[located])))
-  location_key <- do.call(paste, c(nodes_data$location, sep = "|"))
-  for (i in which(is.na(nodes_data$location$latitude))) {
+  location_key <- do.call(paste, c(location, sep = "|"))
+  for (i in which(is.na(location$latitude))) {
     candidates <- ip_rows$row[ip_rows$ip %in% node_ips[[i]]]
     if (length(candidates) == 0) next
     keys <- location_key[candidates]
     best <- candidates[match(names(which.max(table(keys))), keys)]
-    nodes_data$location[i, ] <- nodes_data$location[best, ]
+    nodes_data[["location"]][i, ] <- location[best, ]
     nodes_data$location_source[i] <- "same IP"
   }
 
