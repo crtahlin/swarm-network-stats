@@ -408,17 +408,22 @@ server <- function(input, output, session) {
 
     # all nodes count towards their nbhood, with or without a known location (same as the Nbhoods stats table)
     nodes_data <- nodes_data_reactive()
+    # every nbhood is a level, so empty nbhoods keep their place on the x axis (as gaps)
+    nodes_data$overlay_short <- factor(nodes_data$overlay_short, levels = nbhood_names(input$storageRadius))
+    # average nodes per nbhood, counting empty nbhoods too
+    average_per_nbhood <- nrow(nodes_data) / 2^input$storageRadius
     
     # generate plot
     plot <-
       ggplot(data = nodes_data, aes(x = overlay_short)) +
       geom_bar(fill = swarm_colours$bars) +
-      geom_hline(yintercept = mean(table(nodes_data$overlay_short)), colour = swarm_colours$mint, linetype = "dashed") +
+      geom_hline(yintercept = average_per_nbhood, colour = swarm_colours$mint, linetype = "dashed") +
       # yellow: nodes with an error in either error field (same rule as the Nbhoods stats table),
       # plus unreachable nodes, so the yellow visible above red is always reachable nodes with an error;
       # red: unreachable nodes, drawn on top. Both subsets come from the plotted data, so rows line up
       geom_bar(data = nodes_data[nodes_data$error_logical | nodes_data$unreachable %in% TRUE, ], fill = swarm_colours$error, width = 1) +
       geom_bar(data = nodes_data[nodes_data$unreachable %in% TRUE, ], fill = swarm_colours$unreachable, width = 1) +
+      scale_x_discrete(drop = FALSE) +
       swarm_plot_theme +
       theme(axis.text.x=element_text(angle = -90, hjust = 0)) +
       labs(y = "Node count", x = "Neighbourhood")
@@ -592,7 +597,7 @@ server <- function(input, output, session) {
   })
   
   output$explainer_text_1 <- renderText({
-    paste("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). NOTE: If a neighbourhood has no nodes, it is not shown on graph!")
+    paste("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). Dashed line: average nodes per neighbourhood, counting empty ones. A neighbourhood without nodes shows as a gap.")
     
   })
   
