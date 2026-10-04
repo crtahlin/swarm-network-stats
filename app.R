@@ -52,6 +52,34 @@ format_number <- function(x) {
   format(x, big.mark = ",", scientific = FALSE, trim = TRUE, drop0trailing = TRUE)
 }
 
+# overlay addresses as bit strings. The app never needs more than the first few bits (the radius
+# input goes up to 16, and the radius search stops long before 64), so only the first 16 hex digits
+# (64 bits) are converted, one vectorised lookup per digit, instead of SwarmR's hexadecimal2binary,
+# which converts all 256 bits one character at a time
+hex_bits <- c("0" = "0000", "1" = "0001", "2" = "0010", "3" = "0011", "4" = "0100", "5" = "0101",
+              "6" = "0110", "7" = "0111", "8" = "1000", "9" = "1001", "a" = "1010", "b" = "1011",
+              "c" = "1100", "d" = "1101", "e" = "1110", "f" = "1111")
+overlay_to_bits <- function(overlay, hex_digits = 16) {
+  hex <- tolower(substr(overlay, 1, hex_digits))
+  bits <- character(length(hex))
+  for (k in seq_len(hex_digits)) bits <- paste0(bits, hex_bits[substr(hex, k, k)])
+  unname(bits)
+}
+
+# names of all 2^radius nbhoods in order ("00", "01", "10", "11" for radius 2), built by doubling
+# the list and cached per radius; replaces SwarmR's generate_short_overlay, which loops over
+# 2^radius numbers on every call
+nbhood_name_cache <- new.env()
+nbhood_names <- function(radius) {
+  key <- as.character(radius)
+  if (is.null(nbhood_name_cache[[key]])) {
+    names <- ""
+    for (k in seq_len(radius)) names <- as.vector(t(outer(names, c("0", "1"), paste0)))
+    nbhood_name_cache[[key]] <- names
+  }
+  nbhood_name_cache[[key]]
+}
+
 # TRUE where a string field is present and not empty; a missing field gives FALSE
 has_text <- function(x) {
   if (is.null(x)) return(FALSE)
@@ -91,8 +119,8 @@ public_ips <- function(underlays) {
 prepare_nodes_data <- function(swarmscan_data) {
   # extract data about nodes
   nodes_data <- swarmscan_data$nodes
-  # calculate binary overlay address and add it to data
-  nodes_data$overlay_binary <- sapply(nodes_data$overlay, FUN = hexadecimal2binary)
+  # calculate binary overlay address (first 64 bits) and add it to data
+  nodes_data$overlay_binary <- overlay_to_bits(nodes_data$overlay)
   # if unreachable column does not exist, fill it with NAs (to avoid corner case)
   if (is.null(nodes_data$unreachable)) {nodes_data$unreachable <- NA}
 
@@ -136,6 +164,9 @@ prepare_nodes_data <- function(swarmscan_data) {
     nodes_data[["location"]][i, ] <- location[best, ]
     nodes_data$location_source[i] <- "same IP"
   }
+  
+  # the underlay addresses were only needed for borrowing locations; dropping them halves the cache
+  nodes_data[["underlays"]] <- NULL
 
   nodes_data
 }
@@ -431,7 +462,7 @@ server <- function(input, output, session) {
   output$stats_table <- DT::renderDataTable({
     overlayAsFactor <-
       factor( x = nodes_data_reactive()$overlay_short,
-              levels = generate_short_overlay(radius = input$storageRadius) )
+              levels = nbhood_names(input$storageRadius) )
 
     # count nodes and nodes with errors per nbhood; subsetting a factor keeps all levels,
     # so both counts cover every nbhood even when no node has an error
