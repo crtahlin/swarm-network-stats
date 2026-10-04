@@ -45,6 +45,13 @@ fetch_swarmscan_data <- function() {
   data
 }
 
+# a number as page text: thousands separator and at most two decimals, e.g. 4,693 or 7.32;
+# values below 1 keep 3 significant digits, so 16 GiB shows as 0.0156 TiB rather than 0.02
+format_number <- function(x) {
+  x <- ifelse(abs(x) < 1, signif(x, 3), round(x, 2))
+  format(x, big.mark = ",", scientific = FALSE, trim = TRUE, drop0trailing = TRUE)
+}
+
 # TRUE where a string field is present and not empty; a missing field gives FALSE
 has_text <- function(x) {
   if (is.null(x)) return(FALSE)
@@ -175,6 +182,8 @@ data_status_text <- function() {
 ### UI part
 ui <- 
   page_navbar(
+    # the figures under each heading stand out from it
+    header = tags$style("#storage_taken, #max_radius, #max_capacity, #nodes_count { font-weight: bold; margin-bottom: 1em; }"),
     # settings part
     sidebar = sidebar("Settings",
                       numericInput("storageRadius", "Storage radius",
@@ -193,11 +202,11 @@ ui <-
     ###
     nav_panel("Data", 
               "Estimated total amount of stored data in TiB (2^40 bytes)",
-              verbatimTextOutput("storage_taken"),
+              textOutput("storage_taken"),
               "Maximum storage radius with set minimum required nodes per neighbourhood",
-              verbatimTextOutput("max_radius"),
+              textOutput("max_radius"),
               "Maximum capacity of storage with set minimum required nodes per neighbourhood in TiB (2^40 bytes)",
-              verbatimTextOutput("max_capacity")
+              textOutput("max_capacity")
               ), 
     
     ### 
@@ -208,7 +217,7 @@ ui <-
     ###
     nav_panel("Nbhood plot", 
               "Number of nodes",
-              verbatimTextOutput("nodes_count"),
+              textOutput("nodes_count"),
               "Count of nodes per neighbourhood",
               plotOutput("distPlot", height = "800px"),
               br(),
@@ -445,19 +454,16 @@ server <- function(input, output, session) {
   })
   
   # return max radius
-  output$max_radius <- renderPrint({
-    
-    return(max_capacity_radius())
+  output$max_radius <- renderText({
+    format_number(max_capacity_radius())
   })
   
   
   # return max capacity as text
-  output$max_capacity <- renderPrint({   
+  output$max_capacity <- renderText({
     max_capacity <- 2 ^ 22 * 4096 * (2 ^ max_capacity_radius()) / (1024 * 1024 * 1024 * 1024)
-    
-    return(max_capacity)
-    
-    })
+    paste(format_number(max_capacity), "TiB")
+  })
    
   
   #############
@@ -465,20 +471,25 @@ server <- function(input, output, session) {
   #############
   
   # info on total and unreachable nodes
-  output$nodes_count <- renderPrint({
-    print(paste("Total nodes:", swarm_data()$counts$count))
-    print(paste("Unreachable nodes:", swarm_data()$counts$unreachableCount))
+  output$nodes_count <- renderText({
+    # swarmscan's own counts; if it leaves them out, count the nodes table instead
+    nodes <- swarm_data()$nodes
+    total <- swarm_data()$counts$count
+    unreachable <- swarm_data()$counts$unreachableCount
+    if (is.null(total)) total <- nrow(nodes)
+    if (is.null(unreachable)) unreachable <- sum(nodes[["unreachable"]] %in% TRUE)
+    sprintf("Total nodes: %s. Unreachable nodes: %s.", format_number(total), format_number(unreachable))
   })
   
-  output$explainer_text_1 <- renderPrint({
-    print("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). NOTE: If a neighbourhood has no nodes, it is not shown on graph!")
+  output$explainer_text_1 <- renderText({
+    paste("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). NOTE: If a neighbourhood has no nodes, it is not shown on graph!")
     
   })
   
   ##############
   # Calculate amount of storage on Swarm
   ##############
-  output$storage_taken <- renderPrint({  
+  output$storage_taken <- renderText({
     
     # Save reserve within radius and radius to data frame
     nodes_data <- swarm_data()$nodes
@@ -497,13 +508,15 @@ server <- function(input, output, session) {
       (2 ^ clean_storage_data$storageradius)
     
     # Take median value
+    shiny::validate(shiny::need(length(bytesStored) > 0,
+                                "No node reports its reserve size, so the stored data cannot be estimated."))
     medianBytesStored <- median(bytesStored)
     
     # Convert to TiB (2^40 bytes)
     medianTiBStored <- medianBytesStored / (1024 * 1024 * 1024 * 1024)
     
     # return value
-    return(medianTiBStored)
+    paste(format_number(medianTiBStored), "TiB")
   })
 }
 
