@@ -287,6 +287,9 @@ ui <-
   page_navbar(
     title = span(span(class = "hex", HTML("&#x2B22;")), "swarm network stats"),
     theme = swarm_theme,
+    # tabs keep their fixed heights and the page scrolls; filling the window squeezed the
+    # 800px plot so the text under it overlapped the axis
+    fillable = FALSE,
     header = tags$style(HTML(swarm_css)),
     # settings part
     sidebar = sidebar(title = "Settings",
@@ -413,20 +416,29 @@ server <- function(input, output, session) {
 
     # all nodes count towards their nbhood, with or without a known location (same as the Nbhoods stats table)
     nodes_data <- nodes_data_reactive()
+    # every nbhood is a level, so empty nbhoods keep their place on the x axis (as gaps)
+    nodes_data$overlay_short <- factor(nodes_data$overlay_short, levels = nbhood_names(input$storageRadius))
+    # average nodes per nbhood, counting empty nbhoods too
+    average_per_nbhood <- nrow(nodes_data) / 2^input$storageRadius
     
     # generate plot
     plot <-
       ggplot(data = nodes_data, aes(x = overlay_short)) +
       geom_bar(fill = swarm_colours$bars) +
-      geom_hline(yintercept = mean(table(nodes_data$overlay_short)), colour = swarm_colours$mint, linetype = "dashed") +
+      geom_hline(yintercept = average_per_nbhood, colour = swarm_colours$mint, linetype = "dashed") +
       # yellow: nodes with an error in either error field (same rule as the Nbhoods stats table),
       # plus unreachable nodes, so the yellow visible above red is always reachable nodes with an error;
       # red: unreachable nodes, drawn on top. Both subsets come from the plotted data, so rows line up
       geom_bar(data = nodes_data[nodes_data$error_logical | nodes_data$unreachable %in% TRUE, ], fill = swarm_colours$error, width = 1) +
       geom_bar(data = nodes_data[nodes_data$unreachable %in% TRUE, ], fill = swarm_colours$unreachable, width = 1) +
+      scale_x_discrete(drop = FALSE) +
       swarm_plot_theme +
-      theme(axis.text.x=element_text(angle = -90, hjust = 0)) +
-      labs(y = "Node count", x = "Neighbourhood")
+      # more than 128 labels overlap into an unreadable band (and 65,536 at radius 16 slow the
+      # drawing), so above that the labels are hidden and the axis title gives the count instead
+      theme(axis.text.x = if (2^input$storageRadius <= 128) element_text(angle = -90, hjust = 0) else element_blank()) +
+      labs(y = "Node count",
+           x = if (2^input$storageRadius <= 128) "Neighbourhood" else
+             paste0("Neighbourhood (", format_number(2^input$storageRadius), ", labels hidden; see Nbhoods stats)"))
     
     # return plot
     return(plot)
@@ -597,7 +609,7 @@ server <- function(input, output, session) {
   })
   
   output$explainer_text_1 <- renderText({
-    paste("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). NOTE: If a neighbourhood has no nodes, it is not shown on graph!")
+    paste("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). Dashed line: average nodes per neighbourhood, counting empty ones. A neighbourhood without nodes shows as a gap.")
     
   })
   
