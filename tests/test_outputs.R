@@ -150,9 +150,54 @@ for (variant in variants) {
       }
       session$setInputs(minNodesPerNbhood = 0)
       check(paste(label, "- a minimum of 0 shows a message"), grepl("Enter a minimum", output_or_error(output$max_radius)))
+      
+      # x-axis labels: shown up to 128 nbhoods, hidden above with the count in the axis title
+      x_title <- plot$plot$labels$x
+      labels_hidden <- inherits(plot$plot$theme$axis.text.x, "element_blank")
+      check(paste(label, "- x-axis labels shown or hidden by nbhood count"),
+            if (2^radius <= 128) identical(x_title, "Neighbourhood") && !labels_hidden
+            else grepl("labels hidden", x_title) && labels_hidden, x_title)
     })
   }
 }
+
+# storage radius: only whole radii from 1 to 16, because outputs build 2^radius nbhood names
+fetch_swarmscan_data <- function() fixture
+swarm_cache$data <- NULL; swarm_cache$version <- 0; swarm_cache$next_attempt <- -Inf
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE)
+  for (radius in list(24, 9.5, 0)) {
+    session$setInputs(storageRadius = radius)
+    check(sprintf("radius %s - shows the 1 to 16 message", format(radius)),
+          grepl("Enter a storage radius from 1 to 16", output_or_error(output$stats_table)))
+  }
+  check("radius - nothing above 16 was cached", all(as.integer(ls(nbhood_name_cache)) <= 16))
+})
+
+# default radius: set to the radius most nodes report when data arrives, within 1-16, unless the
+# user already changed it
+radius_updates <- list()
+updateNumericInput <- function(session, inputId, ...) radius_updates[[length(radius_updates) + 1]] <<- list(...)$value
+with_typical_radius <- function(r) { d <- fixture; reported <- !is.na(d$nodes$statusSnapshot$storageRadius); d$nodes$statusSnapshot$storageRadius[reported] <- r; d }
+for (case in list(list(typical = 8, user = NULL, expected = 8), list(typical = 17, user = NULL, expected = 16),
+                  list(typical = 8, user = 6, expected = NULL))) {
+  radius_updates <- list()
+  clock <- as.POSIXct("2026-10-05 12:00:00", tz = "UTC"); current_time <- function() clock
+  download_ok <- is.null(case$user)
+  fetch_swarmscan_data <- function() if (download_ok) with_typical_radius(case$typical) else stop("down")
+  swarm_cache$data <- NULL; swarm_cache$version <- 0; swarm_cache$next_attempt <- -Inf
+  testServer(server, {
+    session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE)
+    if (!is.null(case$user)) {   # the user changes the radius while the first download is failing
+      session$setInputs(storageRadius = case$user); download_ok <<- TRUE; clock <<- clock + 61; session$elapse(60 * 1000)
+    }
+    output$data_status
+  })
+  got <- unlist(radius_updates)
+  check(sprintf("default radius - typical %d%s", case$typical, if (is.null(case$user)) "" else ", user changed it first"),
+        identical(as.numeric(got), as.numeric(case$expected)), paste("updates:", paste(got, collapse = ",")))
+}
+rm(updateNumericInput)
 
 # refresh: a failed first download, recovery, and a failed refresh that keeps the last good data
 clock <- as.POSIXct("2026-10-04 12:00:00", tz = "UTC"); current_time <- function() clock
