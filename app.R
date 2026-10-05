@@ -169,6 +169,14 @@ prepare_nodes_data <- function(swarmscan_data) {
   nodes_data
 }
 
+# the storage radius most nodes report, used as the default radius; NULL if no node reports one
+typical_storage_radius <- function(nodes_data) {
+  radius <- nodes_data[["statusSnapshot"]][["storageRadius"]]
+  radius <- radius[!is.na(radius) & radius > 0]
+  if (length(radius) == 0) return(NULL)
+  as.integer(names(which.max(table(radius))))
+}
+
 ### shared data cache
 # one copy of the data for all sessions of this R process. refresh_swarm_cache() downloads new
 # data when it is due; if a download or its preparation fails, the last good data is kept and
@@ -293,8 +301,9 @@ ui <-
     header = tags$style(HTML(swarm_css)),
     # settings part
     sidebar = sidebar(title = "Settings",
+                      # 9 until data arrives; then the radius most nodes report (see server)
                       numericInput("storageRadius", "Storage radius",
-                                   value = 11, min = 1, max = 16, step = 1),
+                                   value = 9, min = 1, max = 16, step = 1),
                       numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
                                    value = 2, min = 1, max = 8),
                       checkboxInput("onlyFullNodes", "Show only full nodes",
@@ -378,6 +387,15 @@ server <- function(input, output, session) {
     data
   })
 
+  # when the first data arrives, set the radius to the one most nodes report, within the 1-16 the
+  # app accepts; a radius the user already changed (while waiting for data) is left alone
+  observeEvent(swarm_data_polled(), {
+    radius <- typical_storage_radius(swarm_data_polled()$nodes)
+    if (!is.null(radius) && isTRUE(input$storageRadius == 9)) {
+      updateNumericInput(session, "storageRadius", value = min(max(radius, 1), 16))
+    }
+  }, once = TRUE)
+  
   # data freshness, shown in the sidebar; re-read every minute so a failed refresh shows up
   output$data_status <- renderText({
     invalidateLater(60 * 1000)
@@ -609,7 +627,7 @@ server <- function(input, output, session) {
   })
   
   output$explainer_text_1 <- renderText({
-    paste("Select desired neighbourhood size in dropdown. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). Dashed line: average nodes per neighbourhood, counting empty ones. A neighbourhood without nodes shows as a gap.")
+    paste("Set the neighbourhood size with Storage radius in the sidebar. Grey : all nodes in neighbourhood; yellow : nodes reporting an error, including errors swarmscan got when fetching the node's status (could be benign); red : unreachable nodes, drawn over yellow (could be benign). Dashed line: average nodes per neighbourhood, counting empty ones. A neighbourhood without nodes shows as a gap.")
     
   })
   
