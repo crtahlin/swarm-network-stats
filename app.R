@@ -295,6 +295,9 @@ ui <-
   page_navbar(
     title = span(span(class = "hex", HTML("&#x2B22;")), "swarm network stats"),
     theme = swarm_theme,
+    # tabs keep their fixed heights and the page scrolls; filling the window squeezed the
+    # 800px plot so the text under it overlapped the axis
+    fillable = FALSE,
     header = tags$style(HTML(swarm_css)),
     # settings part
     sidebar = sidebar(title = "Settings",
@@ -445,8 +448,12 @@ server <- function(input, output, session) {
       geom_bar(data = nodes_data[nodes_data$unreachable %in% TRUE, ], fill = swarm_colours$unreachable, width = 1) +
       scale_x_discrete(drop = FALSE) +
       swarm_plot_theme +
-      theme(axis.text.x=element_text(angle = -90, hjust = 0)) +
-      labs(y = "Node count", x = "Neighbourhood")
+      # more than 128 labels overlap into an unreadable band (and 65,536 at radius 16 slow the
+      # drawing), so above that the labels are hidden and the axis title gives the count instead
+      theme(axis.text.x = if (2^input$storageRadius <= 128) element_text(angle = -90, hjust = 0) else element_blank()) +
+      labs(y = "Node count",
+           x = if (2^input$storageRadius <= 128) "Neighbourhood" else
+             paste0("Neighbourhood (", format_number(2^input$storageRadius), ", labels hidden; see Nbhoods stats)"))
     
     # return plot
     return(plot)
