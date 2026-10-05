@@ -30,6 +30,18 @@ Open in browser: `localhost:3838/`
 
 The image is built for AMD/Intel architectures, so if you have an ARM Mac, go to the settings in your Docker Desktop and set to use Rosetta emulation. Otherwise it does not seem to work. Probably does not work on other ARM systems.
 
+# Tests
+
+Run the regression test from the repository root:
+
+```
+Rscript tests/test_outputs.R
+```
+
+It loads `app.R`, feeds it the saved sample in `tests/fixtures/swarmscan-sample.json` instead of downloading from swarmscan, and runs every output with `shiny::testServer`. It checks the values against counts computed directly from the data, also on copies of the sample with fields removed, and the data refresh with a failing download. It prints the number of passed and failed checks and exits with status 1 on any failure. It takes about 20 seconds.
+
+The sample is 492 nodes from swarmscan's dump of 2026-09-30, reduced to the fields the app reads, with public IP addresses replaced by addresses from the 198.18.0.0/15 benchmarking range.
+
 # Contributions
 
 Fork, improve, do a PR. No promises about response times. Thank you.
