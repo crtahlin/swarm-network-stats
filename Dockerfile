@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
 # RUN R -e "install.packages('devtools', repos='http://cloud.r-project.org')"
 
 RUN R -e 'install.packages(c("shiny","shinyWidgets","ggplot2","lubridate", "remotes"))'
-RUN R -e 'install.packages(c("DT", "leaflet","forstringr", "DescTools"))'
+RUN R -e 'install.packages(c("DT", "leaflet","forstringr"))'
 RUN R -e 'remotes::install_github("crtahlin/SwarmR")'
 
 #RUN install.r remotes

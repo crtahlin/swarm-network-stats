@@ -8,17 +8,13 @@
 #
 
 ### load libraries
+# httr and jsonlite are used as httr:: and jsonlite::, so they are not attached
 library(shiny)
-library(httr)
-library(jsonlite)
-library(stringr)
-library(stringi)
 library(ggplot2)
 library(DT)
 library(leaflet)
-library(forstringr)
-library(SwarmR)
-library(DescTools)
+library(forstringr)  # str_right
+library(SwarmR)      # first_n_places
 library(dplyr)
 library(bslib)
 
@@ -313,7 +309,7 @@ ui <-
               layout_column_wrap(
                 width = 1/3, fill = FALSE,
                 value_box(title = "Stored data", value = textOutput("storage_taken"),
-                          p("Estimated total amount of stored data, in TiB (2^40 bytes)")),
+                          p("Estimated total amount of stored data, in TiB (2^40 bytes), from all nodes whatever the filter")),
                 value_box(title = "Maximum storage radius", value = textOutput("max_radius"),
                           p("With the set minimum required nodes per neighbourhood")),
                 value_box(title = "Maximum capacity", value = textOutput("max_capacity"),
@@ -328,7 +324,7 @@ ui <-
     
     ###
     nav_panel("Nbhood plot", 
-              div(class = "section-label", "Number of nodes"),
+              div(class = "section-label", "Number of nodes (all nodes, whatever the filter)"),
               textOutput("nodes_count"),
               div(class = "section-label", "Count of nodes per neighbourhood"),
               plotOutput("distPlot", height = "800px"),
@@ -355,7 +351,7 @@ ui <-
   )
 
 
-# Define server logic required to draw a histogram
+# server logic: data, plots, tables and text outputs
 server <- function(input, output, session) {
 
   ###############
@@ -549,7 +545,7 @@ server <- function(input, output, session) {
   # reactive function finding max storage capacity
   max_capacity_radius <- reactive({
     # an empty or zero minimum would break the comparison or never end the loop
-    # (shiny:: is needed because library(jsonlite) masks shiny's validate)
+    # (shiny:: because jsonlite also has a validate function)
     shiny::validate(shiny::need(isTRUE(input$minNodesPerNbhood >= 1), "Enter a minimum of 1 or more nodes per nbhood."))
     # radius 0 is a single nbhood holding every node; if even that is too small, no radius works
     shiny::validate(shiny::need(nrow(nodes_data_reactive()) >= input$minNodesPerNbhood,
