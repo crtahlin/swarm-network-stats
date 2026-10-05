@@ -387,10 +387,13 @@ server <- function(input, output, session) {
     data
   })
 
-  # when the first data arrives, set the radius to the one most nodes report
+  # when the first data arrives, set the radius to the one most nodes report, within the 1-16 the
+  # app accepts; a radius the user already changed (while waiting for data) is left alone
   observeEvent(swarm_data_polled(), {
     radius <- typical_storage_radius(swarm_data_polled()$nodes)
-    if (!is.null(radius)) updateNumericInput(session, "storageRadius", value = radius)
+    if (!is.null(radius) && isTRUE(input$storageRadius == 9)) {
+      updateNumericInput(session, "storageRadius", value = min(max(radius, 1), 16))
+    }
   }, once = TRUE)
   
   # data freshness, shown in the sidebar; re-read every minute so a failed refresh shows up
