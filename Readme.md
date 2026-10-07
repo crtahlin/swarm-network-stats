@@ -1,6 +1,11 @@
 # Description
 
-An app using the [Shiny](https://www.shinyapps.io/) platform on top of [R](https://cran.r-project.org/), reading data from [swarmscan.io](https://swarmscan.io/) and rendering various statistics on screen.
+An app using the [Shiny](https://www.shinyapps.io/) platform on top of [R](https://cran.r-project.org/), reading data from [swarmscan.io](https://swarmscan.io/) and from the Gnosis chain, and rendering various statistics on screen.
+
+# Data sources
+
+- **swarmscan.io**: the network dump (`https://api.swarmscan.io/v1/network/dump`), downloaded every 10 minutes.
+- **Gnosis chain** (`R/chain.R`): stake per node, redistribution reveals and the storage price, read from the [storage-incentives](https://github.com/ethersphere/storage-incentives) contracts over JSON-RPC every 10 minutes. The first read takes a few seconds; later reads fetch only new blocks. Reveals and price changes are kept for the last 30 days. The app uses the public endpoint `https://rpc.gnosischain.com`; set the environment variable `SWARM_RPC_URL` for the R process to use another one.
 
 # Disclaimer
 
@@ -38,9 +43,11 @@ Run the regression test from the repository root:
 Rscript tests/test_outputs.R
 ```
 
-It loads `app.R`, feeds it the saved sample in `tests/fixtures/swarmscan-sample.json` instead of downloading from swarmscan, and runs every output with `shiny::testServer`. It checks the values against counts computed directly from the data, also on copies of the sample with fields removed, and the data refresh with a failing download. It prints the number of passed and failed checks and exits with status 1 on any failure. It takes about 20 seconds.
+It loads `app.R`, feeds it the saved sample in `tests/fixtures/swarmscan-sample.json` instead of downloading from swarmscan, answers chain requests from `tests/fixtures/chain-sample.json` through `tests/fake_rpc.R`, and runs every output with `shiny::testServer`. It checks the values against counts computed directly from the data, also on copies of the sample with fields removed, and the data refresh with a failing download. It prints the number of passed and failed checks and exits with status 1 on any failure. It takes about 20 seconds.
 
-The sample is 492 nodes from swarmscan's dump of 2026-09-30, reduced to the fields the app reads, with public IP addresses replaced by addresses from the 198.18.0.0/15 benchmarking range.
+The chain sample is 6 hours of reveals, claims and price updates before Gnosis block 48,632,531 (2026-10-07), plus the stake history and current stake of 134 owners. The decoded values in the test were checked against foundry's `cast`.
+
+The swarmscan sample is 492 nodes from swarmscan's dump of 2026-09-30, reduced to the fields the app reads, with public IP addresses replaced by addresses from the 198.18.0.0/15 benchmarking range.
 
 # Contributions
 

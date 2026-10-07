@@ -230,6 +230,31 @@ data_status_text <- function() {
   status
 }
 
+# stake, reveals and price from the Gnosis chain, with their own cache (chain_cache)
+# local = TRUE: runApp evaluates app.R in its own environment, which chain.R must see
+source("R/chain.R", local = TRUE)
+
+
+# column names of the staked-nodes table on the Nodes info tab, each with the explanation its
+# header shows on hover
+stakes_table_columns <- c(
+  "Neighbourhood" = "The overlay's neighbourhood at the storage radius set in the sidebar",
+  "Overlay" = "The node's overlay address, as registered with its stake",
+  "Stake (BZZ)" = "The amount deposited",
+  "Effective stake (BZZ)" = "What the redistribution game counts: the committed stake at today's price, capped at the deposit, and 0 while frozen",
+  "Height" = "Reserve doubling: how many times the node has doubled its storage",
+  "Frozen" = "Whether the stake is currently frozen",
+  "Can play" = "Whether the node can take part in the game now: staked at least 2 rounds ago and not frozen",
+  "Last reveal (UTC)" = paste0("Time of the node's latest reveal in the last ", chain_window_days, " days; empty if it has not played in that time"),
+  "Last round" = paste0("Round of the node's latest reveal in the last ", chain_window_days, " days; empty if it has not played in that time"),
+  "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
+  "In swarmscan" = "Whether swarmscan lists the node at all"
+)
+stakes_table_header <- function() {
+  tags$table(class = "display", tags$thead(tags$tr(
+    lapply(names(stakes_table_columns), function(name) tags$th(title = stakes_table_columns[[name]], name)))))
+}
+
 
 ### LOOK AND FEEL
 # dark slate, orange and mint, after the colours of ethswarm.org (not an exact copy).
@@ -260,7 +285,7 @@ swarm_css <- paste0("
   .sidebar-title, .section-label { font-family: var(--mono); font-size: 0.75rem; text-transform: uppercase;
                                    letter-spacing: 0.1em; color: ", swarm_colours$muted, "; margin: 0.25rem 0 0.75rem; }
   .section-label::before { content: '> '; color: ", swarm_colours$orange, "; }
-  #data_status, #map_note { font-family: var(--mono); font-size: 0.8rem; color: ", swarm_colours$muted, "; }
+  #data_status, #chain_status, #map_note { font-family: var(--mono); font-size: 0.8rem; color: ", swarm_colours$muted, "; }
   #nodes_count { font-family: var(--mono); font-weight: bold; color: ", swarm_colours$mint, "; margin-bottom: 1em; }
   .bslib-value-box { background: ", swarm_colours$surface, " !important; border: 1px solid ", swarm_colours$line, "; }
   .bslib-value-box .value-box-title { font-family: var(--mono); font-size: 0.8rem; text-transform: uppercase;
@@ -308,7 +333,8 @@ ui <-
                                    value = 2, min = 1, max = 8),
                       checkboxInput("onlyFullNodes", "Show only full nodes",
                                     value = TRUE),
-                      textOutput("data_status")),
+                      textOutput("data_status"),
+                      textOutput("chain_status")),
     # panels part
     ###
     nav_panel("Map", 
@@ -359,7 +385,14 @@ ui <-
     ###
     nav_panel("Nodes info",
               div(class = "section-label", "Individual nodes statistics"),
-              DT::dataTableOutput("nodes_data"))
+              DT::dataTableOutput("nodes_data"),
+              br(),
+              div(class = "section-label", "Staked nodes (Gnosis chain)"),
+              p("Every overlay with stake in the staking contract, and its latest reveal in the redistribution game ",
+                "within the last ", chain_window_days, " days. Effective stake is what the game weighs: the committed stake at today's ",
+                "price, capped at the deposit, and 0 while frozen. A node can play once its stake is at least 2 rounds ",
+                "old and not frozen. The truth match is empty for a round that has not been claimed."),
+              DT::dataTableOutput("stakes_table"))
   )
 
 
@@ -401,6 +434,21 @@ server <- function(input, output, session) {
     invalidateLater(60 * 1000)
     swarm_data_polled()
     data_status_text()
+  })
+
+  # chain data (stake, reveals, price), polled like the swarmscan data; outputs that use it
+  # read chain_data_polled() and recompute when a new read arrives
+  chain_data_polled <- reactivePoll(60 * 1000, session,
+                                    checkFunc = function() {
+                                      version <- refresh_chain_cache()
+                                      if (is.null(chain_cache$data)) paste(version, format(chain_cache$last_attempt)) else version
+                                    },
+                                    valueFunc = function() chain_cache$data)
+
+  output$chain_status <- renderText({
+    invalidateLater(60 * 1000)
+    chain_data_polled()
+    chain_status_text()
   })
 
   # based on the storage radius set, take the first n chars of the overlay address and add to the data
@@ -547,6 +595,38 @@ server <- function(input, output, session) {
   rownames = FALSE 
   )
   
+  # table of staked overlays from the chain, with each one's latest reveal in the window
+  output$stakes_table <- DT::renderDataTable({
+    chain <- chain_data_polled()
+    shiny::validate(shiny::need(!is.null(chain),
+                                paste0("No data from the Gnosis chain yet (", chain_cache$last_error, "). Retrying every minute.")))
+    shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
+    stakes <- chain_stakes(chain)
+    latest <- last_reveals(chain, chain_window_days)
+    reveal <- latest[match(stakes$overlay, latest$overlay), ]
+    # the swarmscan dump, when there is one, says whether swarmscan sees the node at all
+    dump_overlays <- swarm_data_polled()$nodes$overlay
+
+    stakes_info <- data.frame(
+      nbhood = first_n_places(overlay_to_bits(stakes$overlay), input$storageRadius),
+      overlay = stakes$overlay,
+      stake = round(stakes$stake_bzz, 2),
+      effective_stake = round(stakes$effective_stake_bzz, 2),
+      height = stakes$height,
+      frozen = stakes$frozen,
+      can_play = stakes$can_play,
+      last_reveal = format(reveal$time, "%Y-%m-%d %H:%M", tz = "UTC"),
+      last_round = reveal$round,
+      matched_truth = reveal$matched_truth,
+      in_swarmscan = if (is.null(dump_overlays)) NA else stakes$overlay %in% dump_overlays
+    )
+    stakes_info[order(stakes_info$nbhood, -stakes_info$effective_stake), ]
+  },
+  # column headers with an explanation shown when the pointer rests on them (the title attribute)
+  container = stakes_table_header(),
+  rownames = FALSE
+  )
+
   # table of reachability
   output$reachability_status <- DT::renderDataTable({
     reachability_table <- 
