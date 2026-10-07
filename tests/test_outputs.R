@@ -36,6 +36,9 @@ capture_plot <- function(expr, ...) {
 }
 captured <- function(name) readRDS(file.path(capture_dir, paste0(name, ".rds")))
 suppressWarnings(suppressPackageStartupMessages(eval(parse(text = src))))
+# the chain answers from tests/fixtures/chain-sample.json; its window is 6 hours, as recorded
+source("tests/fake_rpc.R")
+chain_window_days <- 0.25
 
 passed <- 0; failed <- 0
 check <- function(label, ok, detail = "") {
@@ -71,7 +74,7 @@ expected_max_radius <- function(bits, minimum) {
   radius
 }
 
-all_outputs <- c("leafletMap", "map_note", "data_status", "storage_taken", "max_radius", "max_capacity",
+all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data")
 
 for (variant in variants) {
@@ -212,6 +215,99 @@ testServer(server, {
   mode <<- "fail"; clock <<- clock + 10 * 60 + 1; session$elapse(60 * 1000)
   check("refresh - failed refresh keeps the last good data", grepl(paste("Total nodes:", format_number(fixture$count)), output$nodes_count))
   check("refresh - status reports the failed refresh", grepl("last refresh failed", output$data_status))
+})
+
+### chain data (R/chain.R) against the fake chain in tests/fake_rpc.R
+reset_chain_cache <- function() {
+  chain_cache$data <- NULL; chain_cache$version <- 0; chain_cache$next_attempt <- -Inf; chain_cache$last_error <- NULL
+}
+current_time <- function() Sys.time()
+
+# hex decoding, including values above 32 bits
+check("chain - hex to number", identical(hex_to_number(c("0x0", "ff", "0x20000000000000", "0x0de0b6b3a7640000")),
+                                         c(0, 255, 2^53, 1e18)))
+
+# decoders against the same fixture values decoded with foundry's cast
+chain <- fetch_chain_data()
+reveal <- chain$reveals[chain$reveals$overlay == "e15d72ea416c695e3afb7d7c18a2a72208d0c59af3a81a74433382737cdb9bfc" &
+                          chain$reveals$round == 319931, ]
+check("chain - Revealed decoded as cast decodes it", nrow(reveal) == 1 && reveal$stake_bzz == 120 &&
+        reveal$stake_density == 3.072e20 && reveal$depth == 9 &&
+        reveal$reserve_commitment == "005a6636207fbb921e95326429c992a2be3813346d4d33ec23e1a5a6f0b3078d")
+stake <- chain$stakes[chain$stakes$owner == "0x013f327c6ae396b2e23d0a9cc35a7360aa4132ce", ]
+check("chain - stakes() decoded as cast decodes it", nrow(stake) == 1 && stake$stake_bzz == 300 &&
+        stake$height == 1 && stake$last_updated_block == 46011240 && stake$minimum_stake_bzz == 20 &&
+        stake$overlay == "3909579c7d67be0b6f7d1e955ea17d17e25bf658bb24f5ed7e6f5fe8f6096b0f")
+# committed stake 23,758,612,497,030 x 2^1 x price is worth more than the 300 BZZ deposit, so the deposit caps it
+check("chain - effective stake is capped at the deposit", isTRUE(stake$effective_stake_bzz == 300) && !stake$frozen && stake$can_play)
+check("chain - current price", chain$price == strtoi(chain_fixture$current_price, 16L))
+
+# window, counts and matching against the raw fixture
+raw_logs <- chain_fixture$logs[[tolower(chain_contracts$redistribution$address)]]
+raw_block <- vapply(raw_logs, function(l) hex_to_number(l$blockNumber), 0)
+raw_topic <- vapply(raw_logs, function(l) l$topics[[1]], "")
+in_window <- raw_block >= chain$window_start & raw_block <= chain$to_block
+check("chain - every reveal in the window and none before it",
+      nrow(chain$reveals) == sum(in_window & raw_topic == chain_topics$revealed) && min(chain$reveals$block) >= chain$window_start)
+check("chain - the window is 6 hours", chain$to_block - chain$window_start == 4320)
+check("chain - every reveal has a time", !anyNA(chain$reveals$time))
+truth_rounds <- raw_block[in_window & raw_topic == chain_topics$truth] %/% 152
+claimed <- chain$reveals$round %in% truth_rounds
+check("chain - reveals in claimed rounds are matched or not; others are NA",
+      !anyNA(chain$reveals$matched_truth[claimed]) && all(is.na(chain$reveals$matched_truth[!claimed])))
+truth_of <- setNames(substr(vapply(raw_logs[in_window & raw_topic == chain_topics$truth], `[[`, "", "data"), 3, 66),
+                     truth_rounds)
+check("chain - a matched reveal has its round's truth hash",
+      all(chain$reveals$reserve_commitment[chain$reveals$matched_truth %in% TRUE] ==
+            truth_of[as.character(chain$reveals$round[chain$reveals$matched_truth %in% TRUE])]))
+check("chain - one stake row per owner with a stake",
+      nrow(chain$stakes) == length(chain_fixture$stakes) && !anyDuplicated(chain$stakes$overlay))
+check("chain - every revealing overlay has a stake", all(chain$reveals$overlay %in% chain$stakes$overlay))
+latest <- last_reveals(chain, 0.25)
+check("chain - last_reveals gives one row per overlay, its latest round",
+      !anyDuplicated(latest$overlay) && nrow(latest) == length(unique(chain$reveals$overlay)) &&
+        all(latest$round == tapply(chain$reveals$round, chain$reveals$overlay, max)[latest$overlay]))
+
+# a query the RPC refuses for too many results is split until it succeeds, with the same result
+same_data <- function(a, b) {
+  sorted <- function(d) { d <- d[do.call(order, unname(as.list(d))), ]; rownames(d) <- NULL; d }
+  isTRUE(all.equal(sorted(a$reveals), sorted(b$reveals))) && isTRUE(all.equal(sorted(a$prices), sorted(b$prices))) &&
+    isTRUE(all.equal(sorted(a$stakes), sorted(b$stakes))) && setequal(a$owners, b$owners)
+}
+fake_rpc$max_logs <- 100; fake_rpc$requests <- 0
+split <- fetch_chain_data()
+check("chain - refused log queries are split and give the same data", same_data(split, chain) && fake_rpc$requests > 10)
+fake_rpc$max_logs <- Inf
+
+# an update reads only the new blocks and ends with the same data as one full read
+fake_rpc$head <- chain_fixture$head_block - 2000
+older <- fetch_chain_data()
+fake_rpc$head <- chain_fixture$head_block
+updated <- fetch_chain_data(older)
+check("chain - an update equals a full read", same_data(updated, chain))
+check("chain - owners are addresses", all(grepl("^0x[0-9a-f]{40}$", updated$owners)))
+
+# eth_calls a batch leaves unanswered are sent again
+fake_rpc$drop_calls <- 7
+retried <- tryCatch(read_stakes(chain$owners, chain$price, chain$to_block), error = function(e) e)
+check("chain - refused calls in a batch are retried", !inherits(retried, "error") && isTRUE(all.equal(retried, chain$stakes)))
+fake_rpc$drop_calls <- 0
+
+# the cache: no data yet, recovery, and a failed refresh that keeps the last good data
+clock <- as.POSIXct("2026-10-07 12:00:00", tz = "UTC"); current_time <- function() clock
+reset_chain_cache(); fake_rpc$fail <- TRUE
+refresh_chain_cache()
+check("chain cache - no data yet shows a message", grepl("No data from the Gnosis chain yet \\(the Gnosis RPC answered with HTTP status 503\\)", chain_status_text()))
+fake_rpc$fail <- FALSE; clock <- clock + 61
+refresh_chain_cache()
+check("chain cache - data after recovery", !is.null(chain_cache$data) && grepl("Chain data up to Gnosis block 48,632,531", chain_status_text()))
+fake_rpc$fail <- TRUE; clock <- clock + chain_refresh_secs + 1
+refresh_chain_cache()
+check("chain cache - a failed refresh keeps the last good data", !is.null(chain_cache$data) && grepl("The last read failed", chain_status_text()))
+fake_rpc$fail <- FALSE
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE)
+  check("chain - the sidebar shows the chain status", grepl("staked overlays", output$chain_status))
 })
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))

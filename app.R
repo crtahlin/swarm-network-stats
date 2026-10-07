@@ -230,6 +230,10 @@ data_status_text <- function() {
   status
 }
 
+# stake, reveals and price from the Gnosis chain, with their own cache (chain_cache)
+# local = TRUE: runApp evaluates app.R in its own environment, which chain.R must see
+source("R/chain.R", local = TRUE)
+
 
 ### LOOK AND FEEL
 # dark slate, orange and mint, after the colours of ethswarm.org (not an exact copy).
@@ -260,7 +264,7 @@ swarm_css <- paste0("
   .sidebar-title, .section-label { font-family: var(--mono); font-size: 0.75rem; text-transform: uppercase;
                                    letter-spacing: 0.1em; color: ", swarm_colours$muted, "; margin: 0.25rem 0 0.75rem; }
   .section-label::before { content: '> '; color: ", swarm_colours$orange, "; }
-  #data_status, #map_note { font-family: var(--mono); font-size: 0.8rem; color: ", swarm_colours$muted, "; }
+  #data_status, #chain_status, #map_note { font-family: var(--mono); font-size: 0.8rem; color: ", swarm_colours$muted, "; }
   #nodes_count { font-family: var(--mono); font-weight: bold; color: ", swarm_colours$mint, "; margin-bottom: 1em; }
   .bslib-value-box { background: ", swarm_colours$surface, " !important; border: 1px solid ", swarm_colours$line, "; }
   .bslib-value-box .value-box-title { font-family: var(--mono); font-size: 0.8rem; text-transform: uppercase;
@@ -308,7 +312,8 @@ ui <-
                                    value = 2, min = 1, max = 8),
                       checkboxInput("onlyFullNodes", "Show only full nodes",
                                     value = TRUE),
-                      textOutput("data_status")),
+                      textOutput("data_status"),
+                      textOutput("chain_status")),
     # panels part
     ###
     nav_panel("Map", 
@@ -401,6 +406,21 @@ server <- function(input, output, session) {
     invalidateLater(60 * 1000)
     swarm_data_polled()
     data_status_text()
+  })
+
+  # chain data (stake, reveals, price), polled like the swarmscan data; outputs that use it
+  # read chain_data_polled() and recompute when a new read arrives
+  chain_data_polled <- reactivePoll(60 * 1000, session,
+                                    checkFunc = function() {
+                                      version <- refresh_chain_cache()
+                                      if (is.null(chain_cache$data)) paste(version, format(chain_cache$last_attempt)) else version
+                                    },
+                                    valueFunc = function() chain_cache$data)
+
+  output$chain_status <- renderText({
+    invalidateLater(60 * 1000)
+    chain_data_polled()
+    chain_status_text()
   })
 
   # based on the storage radius set, take the first n chars of the overlay address and add to the data
