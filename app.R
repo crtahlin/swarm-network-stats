@@ -502,8 +502,10 @@ ui <-
               p("Stored data is estimated from each node's reserve: the reserve within its radius times the number of ",
                 "neighbourhoods, taken as the median over the nodes that report it. The history has one value a day from ",
                 "swarmscan's archive of network dumps, plus today's. The fitted curves are projections of past growth, ",
-                "not forecasts. A bee node raises its radius when the chunks within its radius exceed its reserve capacity ",
-                "(exactly 100%, 2^22 chunks), and lowers it when they fall below 50% and syncing has stopped (checked every 30 minutes). ",
+                "not forecasts. When a bee node's reserve exceeds its capacity (2^22 chunks, or 2^(22+d) with reserve doubling d), it ",
+                "evicts chunks outside its radius first and raises the radius only if that is not enough, that is when the chunks ",
+                "within its radius alone exceed capacity. It lowers the radius when the chunks within its radius are below 50% of ",
+                "capacity and pull-sync has stopped, checked every 15 minutes (bee pkg/storer/reserve.go, pkg/node/node.go). ",
                 "Reserves fill almost evenly across neighbourhoods, so the network's capacity at the radius set in the sidebar is ",
                 "where nodes split."),
               layout_column_wrap(
@@ -521,9 +523,10 @@ ui <-
                          dblclick = "growthPlot_dblclick", hover = hoverOpts("growthPlot_pointer", delay = 80, delayType = "throttle")),
               br(),
               div(class = "section-label", "Reserve fullness"),
-              p("How full the nodes' reserves are, as a share of one reserve (2^22 chunks) per neighbourhood: a node with ",
-                "reserve doubling counts per neighbourhood it stores. Above 100% a bee node moves to the next radius; below 50%, ",
-                "once syncing has stopped, it falls back. Each change of radius halves or doubles the share."),
+              p("The chunks within each node's radius as a share of its reserve capacity (2^22 chunks, or 2^(22+d) with reserve ",
+                "doubling d). A bee node raises its radius when this goes above 100%, and lowers it below 50% once pull-sync has ",
+                "stopped. Each change of radius halves or doubles the share. Before nodes reported their reserve within radius ",
+                "(March 2024), the line shows the whole reserve, which overstates the share."),
               div(style = "display: flex; justify-content: space-between; gap: 1em;",
                   textOutput("fullnessPlot_hover", container = p),
                   actionLink("fullnessPlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
@@ -1150,6 +1153,7 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(isTRUE(input$growthHorizon >= 1), "Project at least 1 day ahead."))
     shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
     history <- growth_history()
+    shiny::validate(shiny::need(nrow(history) > 0, "No stored-data history yet, and the current swarmscan data has too few nodes reporting their reserve."))
     fit <- fit_growth(history, input$fitDays)
     radius <- input$storageRadius
     lines <- data.frame(level = c(capacity_tib(radius), capacity_tib(radius + 1), capacity_tib(radius) / 2),
@@ -1161,27 +1165,30 @@ server <- function(input, output, session) {
   output$growth_summary <- renderText({
     g <- growth_fit()
     now <- tail(g$history, 1)
-    head_text <- sprintf("Stored now: %s TiB, with the median reserve %.0f%% full. Capacity at radius %d: %s TiB.",
-                         format_number(round(now$stored_tib, 2)), 100 * now$fullness_median, g$radius, format_number(capacity_tib(g$radius)))
+    head_text <- sprintf("Stored on %s: %s TiB, with the median reserve %.0f%% full. Capacity at radius %d: %s TiB.",
+                         format(now$date, "%Y-%m-%d"), format_number(round(now$stored_tib, 2)), 100 * now$fullness_median,
+                         g$radius, format_number(capacity_tib(g$radius)))
     if (is.null(g$fit)) return(paste(head_text, "There is not enough history in the fit window to fit a curve."))
-    shiny::validate(shiny::need(isTRUE(input$assumedGrowth > -100), "Enter an assumed growth above -100% a month."))
+    # a line the stored data has already passed has no crossing ahead
+    passed <- function(i) if (i == 3) now$stored_tib < g$lines$level[i] else now$stored_tib >= g$lines$level[i]
+    crossing_text <- function(i, date) {
+      if (passed(i)) return(sprintf("%s: already %s", g$lines$label[i], if (i == 3) "below" else "above"))
+      sprintf("%s on %s", g$lines$label[i], if (is.na(date)) "no date (not reached)" else format(date, "%Y-%m-%d"))
+    }
     describe <- function(kind, rate_text) {
-      crossings <- vapply(seq_len(nrow(g$lines)), function(i) {
-        date <- crossing_date(g$fit, g$lines$level[i], kind)
-        sprintf("%s on %s", g$lines$label[i], if (is.na(date)) "no date (not reached)" else format(date, "%Y-%m-%d"))
-      }, "")
+      crossings <- vapply(seq_len(nrow(g$lines)), function(i) crossing_text(i, crossing_date(g$fit, g$lines$level[i], kind,
+                                                                                                        if (i == 3) "down" else "up")), "")
       paste0(rate_text, ": ", paste(crossings, collapse = "; "), ".")
     }
     slope <- stats::coef(g$fit$linear)[2]
     growth <- 100 * (exp(stats::coef(g$fit$exponential)[2]) - 1)
-    assumed_text <- if (isTRUE(input$assumedGrowth != 0)) {
-      crossings <- vapply(seq_len(nrow(g$lines)), function(i) {
-        date <- assumed_crossing(now$date, now$stored_tib, input$assumedGrowth, g$lines$level[i])
-        sprintf("%s on %s", g$lines$label[i], if (is.na(date)) "no date (not reached)" else format(date, "%Y-%m-%d"))
-      }, "")
-      paste0(sprintf("Assumed %+g%% a month from today: ", input$assumedGrowth), paste(crossings, collapse = "; "), ".")
-    } else ""
-    paste(head_text, sprintf("Projection from the last %s days.", format_number(input$fitDays)),
+    assumed_text <- if (isTRUE(input$assumedGrowth <= -100)) "The assumed growth must be above -100% a month." else
+      if (isTRUE(input$assumedGrowth != 0)) {
+        crossings <- vapply(seq_len(nrow(g$lines)), function(i)
+          crossing_text(i, assumed_crossing(now$date, now$stored_tib, input$assumedGrowth, g$lines$level[i])), "")
+        paste0(sprintf("Assumed %+g%% a month from %s: ", input$assumedGrowth, format(now$date, "%Y-%m-%d")), paste(crossings, collapse = "; "), ".")
+      } else ""
+    paste(head_text, sprintf("Projection from a fit to %s to %s.", format(g$fit$from, "%Y-%m-%d"), format(g$fit$to, "%Y-%m-%d")),
           describe("linear", sprintf("Straight line, %+.3f TiB a day", slope)),
           describe("exponential", sprintf("Exponential, %+.2f%% a day", growth)), assumed_text)
   })
@@ -1210,7 +1217,7 @@ server <- function(input, output, session) {
     parts <- format(as.Date(round(at), origin = "1970-01-01"), "%Y-%m-%d")
     stored <- series$stored
     near <- which.min(abs(as.numeric(stored$x) - at))
-    if (abs(as.numeric(stored$x[near]) - at) <= 1) {
+    if (length(near) == 1 && abs(as.numeric(stored$x[near]) - at) <= 1) {
       parts <- c(parts, sprintf("stored %s TiB at radius %s%s", format_number(round(stored$y[near], 2)), stored$radius[near],
                                 if (stored$measure[near] == "whole reserve") " (older measure)" else ""))
     }
@@ -1226,7 +1233,8 @@ server <- function(input, output, session) {
     g <- growth_fit()
     plot <- ggplot() +
       geom_hline(data = g$lines, aes(yintercept = level), colour = swarm_colours$muted, linetype = "dotted", linewidth = 0.8) +
-      geom_text(data = g$lines, aes(x = min(g$history$date), y = level, label = label), colour = swarm_colours$text,
+      geom_text(data = g$lines, aes(x = if (is.null(growth_zoom())) min(g$history$date) else as.Date(growth_zoom()[1], origin = "1970-01-01"),
+                                    y = level, label = label), colour = swarm_colours$text,
                 family = "mono", fontface = "bold", size = 5, hjust = 0, vjust = -0.5) +
       geom_line(data = g$history[g$history$measure == "within radius", ], aes(x = date, y = stored_tib, colour = "Stored data"), linewidth = 1) +
       geom_line(data = g$history[g$history$measure == "whole reserve", ], aes(x = date, y = stored_tib, colour = "Stored data, older measure"),
@@ -1256,7 +1264,7 @@ server <- function(input, output, session) {
     if (is.null(at)) return(time_plot_hint)
     history <- growth_fit()$history
     near <- which.min(abs(as.numeric(history$date) - at))
-    if (abs(as.numeric(history$date[near]) - at) > 1) return(format(as.Date(round(at), origin = "1970-01-01"), "%Y-%m-%d"))
+    if (length(near) == 0 || abs(as.numeric(history$date[near]) - at) > 1) return(format(as.Date(round(at), origin = "1970-01-01"), "%Y-%m-%d"))
     sprintf("%s | median %.0f%% full | 90th percentile %.0f%% full | radius %s", format(history$date[near], "%Y-%m-%d"),
             100 * history$fullness_median[near], 100 * history$fullness_p90[near], history$radius_mode[near])
   })

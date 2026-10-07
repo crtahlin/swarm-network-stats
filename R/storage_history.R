@@ -9,11 +9,12 @@ storage_history_file <- "data/storage-history.csv"
 # median of a handful of nodes says little about the network
 min_reporting_nodes <- 100
 
-# the reserve and storage radius of the nodes that report both (above 0), with the reserve per
-# neighbourhood. field: the reserve figure to use. Dumps before bee reported reserveSizeWithinRadius
+# the reserve and storage radius of the nodes that report both (above 0), with each node's reserve
+# doubling. field: the reserve figure to use. Dumps before bee reported reserveSizeWithinRadius
 # only have reserveSize, which also counts chunks outside the node's radius. A node with reserve
-# doubling d (committedDepth - storageRadius) reports the reserve of all 2^d neighbourhoods it
-# stores, so it is divided by 2^d; older dumps have no committedDepth, from before doubling existed
+# doubling d has committedDepth = storageRadius + d (bee pkg/storer/reserve.go): its storage radius
+# is d below the network's, and its reserve covers 2^d neighbourhoods with a capacity of 2^(22+d)
+# chunks. Older dumps have no committedDepth, from before doubling existed
 reporting_reserves <- function(nodes, field = "reserveSizeWithinRadius") {
   status <- nodes[["statusSnapshot"]]
   reserve <- status[[field]]; radius <- status[["storageRadius"]]
@@ -21,12 +22,13 @@ reporting_reserves <- function(nodes, field = "reserveSizeWithinRadius") {
   keep <- !is.na(reserve) & !is.na(radius) & reserve > 0 & radius > 0
   committed <- status[["committedDepth"]]
   doubling <- if (is.null(committed)) rep(0, length(reserve)) else pmax(ifelse(is.na(committed), radius, committed) - radius, 0)
-  data.frame(reserve = reserve[keep] / 2^doubling[keep], radius = radius[keep], doubling = doubling[keep])
+  data.frame(reserve = reserve[keep], radius = radius[keep], doubling = doubling[keep])
 }
 
 # estimated amount of data stored on the network, in TiB (2^40 bytes): each reporting node's
-# reserve within radius per neighbourhood, times the 2^radius neighbourhoods, and the median over
-# the nodes.
+# reserve within its radius, times the 2^radius neighbourhoods of that radius, and the median over
+# the nodes. This needs no correction for doubling: a doubled node's radius is lower by d and its
+# reserve covers 2^d neighbourhoods, so the product is the same.
 # NA when no node reports its reserve
 estimate_stored_tib <- function(nodes, field = "reserveSizeWithinRadius") {
   r <- reporting_reserves(nodes, field)
@@ -44,7 +46,8 @@ summarise_dump <- function(nodes, date) {
   field <- "reserveSizeWithinRadius"
   if (nrow(reporting_reserves(nodes, field)) == 0) field <- "reserveSize"
   r <- reporting_reserves(nodes, field)
-  fullness <- r$reserve / reserve_capacity_chunks
+  # fullness against the node's own capacity, 2^(22 + doubling) chunks
+  fullness <- r$reserve / (reserve_capacity_chunks * 2^r$doubling)
   measure <- if (nrow(r) == 0) "no status" else if (field == "reserveSize") "whole reserve" else "within radius"
   data.frame(date = as.Date(date), measure = measure,
              nodes = nrow(nodes), nodes_reporting = nrow(r),
@@ -60,7 +63,7 @@ read_storage_history <- function(path = storage_history_file) {
   empty <- data.frame(date = as.Date(character(0)), measure = character(0), nodes = numeric(0), nodes_reporting = numeric(0),
                       radius_mode = integer(0), reserve_median = numeric(0), fullness_median = numeric(0),
                       fullness_p90 = numeric(0), stored_tib = numeric(0))
-  if (!file.exists(path)) return(empty)
+  if (!file.exists(path) || file.size(path) == 0) return(empty)
   history <- utils::read.csv(path, stringsAsFactors = FALSE)
   history$date <- as.Date(history$date)
   history[order(history$date), ]
@@ -86,18 +89,21 @@ project_growth <- function(fit, horizon_days) {
         data.frame(date = dates, stored_tib = exp(stats::coef(fit$exponential)[1] + stats::coef(fit$exponential)[2] * days), fit = "Exponential"))
 }
 
-# the first date after the last data point at which a fitted curve reaches a level, or NA if it
-# never does (a flat or shrinking curve never reaches a higher level, nor a growing one a lower)
-crossing_date <- function(fit, level, kind = c("linear", "exponential")) {
+# the first date after the last data point at which a fitted curve, rising ("up") or falling
+# ("down"), reaches a level; NA if it never does (a flat or shrinking curve never reaches a higher
+# level, nor a growing one a lower). If the curve already passed the level within the fit window,
+# the date is the day after the window: the caller tells from the measured data whether the level
+# has actually been passed
+crossing_date <- function(fit, level, kind = c("linear", "exponential"), direction = c("up", "down")) {
   kind <- match.arg(kind)
+  direction <- match.arg(direction)
   coefs <- stats::coef(fit[[kind]])
   value <- if (kind == "linear") level else log(level)
-  if (!is.finite(value) || coefs[2] == 0) return(as.Date(NA))
+  if (!is.finite(value) || coefs[2] == 0 || (coefs[2] > 0) != (direction == "up")) return(as.Date(NA))
   # the day the curve crosses, as a whole day (the small tolerance keeps rounding error from
   # turning an exact crossing into the day before)
   day <- floor(unname((value - coefs[1]) / coefs[2]) + 1e-9)
-  if (day <= as.numeric(fit$to)) return(as.Date(NA))
-  as.Date(day, origin = "1970-01-01")
+  as.Date(max(day, as.numeric(fit$to) + 1), origin = "1970-01-01")
 }
 
 ### an assumed growth rate, as a what-if next to the fits
