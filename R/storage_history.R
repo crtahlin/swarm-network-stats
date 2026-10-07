@@ -99,3 +99,21 @@ crossing_date <- function(fit, level, kind = c("linear", "exponential")) {
   if (day <= as.numeric(fit$to)) return(as.Date(NA))
   as.Date(day, origin = "1970-01-01")
 }
+
+### an assumed growth rate, as a what-if next to the fits
+days_per_month <- 365.25 / 12
+
+# stored data from a starting value, growing by `percent_per_month` (negative shrinks), one point a day
+assumed_growth <- function(start_date, start_tib, percent_per_month, horizon_days) {
+  days <- 0:horizon_days
+  data.frame(date = start_date + days, stored_tib = start_tib * (1 + percent_per_month / 100)^(days / days_per_month))
+}
+
+# the date the assumed growth reaches a level, or NA if it never does
+assumed_crossing <- function(start_date, start_tib, percent_per_month, level) {
+  rate <- log(1 + percent_per_month / 100)
+  if (!is.finite(rate) || rate == 0) return(as.Date(NA))
+  days <- days_per_month * log(level / start_tib) / rate
+  if (!is.finite(days) || days <= 0) return(as.Date(NA))
+  start_date + floor(days + 1e-9)
+}

@@ -490,9 +490,10 @@ ui <-
                 "Reserves fill almost evenly across neighbourhoods, so the network's capacity at the radius set in the sidebar is ",
                 "where nodes split."),
               layout_column_wrap(
-                width = 1/2, fill = FALSE,
+                width = 1/3, fill = FALSE,
                 numericInput("fitDays", "Fit over the last (days)", value = 90, min = 7, max = 1500, step = 1),
-                numericInput("growthHorizon", "Project ahead (days)", value = 180, min = 1, max = 1095, step = 1)
+                numericInput("growthHorizon", "Project ahead (days)", value = 180, min = 1, max = 1095, step = 1),
+                numericInput("assumedGrowth", "Assumed growth (% a month; 0 = off)", value = 0, min = -50, max = 500, step = 1)
               ),
               textOutput("growth_summary", container = p),
               div(style = "display: flex; justify-content: space-between; gap: 1em;",
@@ -1062,6 +1063,7 @@ server <- function(input, output, session) {
     head_text <- sprintf("Stored now: %s TiB, with the median reserve %.0f%% full. Capacity at radius %d: %s TiB.",
                          format_number(round(now$stored_tib, 2)), 100 * now$fullness_median, g$radius, format_number(capacity_tib(g$radius)))
     if (is.null(g$fit)) return(paste(head_text, "There is not enough history in the fit window to fit a curve."))
+    shiny::validate(shiny::need(isTRUE(input$assumedGrowth > -100), "Enter an assumed growth above -100% a month."))
     describe <- function(kind, rate_text) {
       crossings <- vapply(seq_len(nrow(g$lines)), function(i) {
         date <- crossing_date(g$fit, g$lines$level[i], kind)
@@ -1071,9 +1073,16 @@ server <- function(input, output, session) {
     }
     slope <- stats::coef(g$fit$linear)[2]
     growth <- 100 * (exp(stats::coef(g$fit$exponential)[2]) - 1)
+    assumed_text <- if (isTRUE(input$assumedGrowth != 0)) {
+      crossings <- vapply(seq_len(nrow(g$lines)), function(i) {
+        date <- assumed_crossing(now$date, now$stored_tib, input$assumedGrowth, g$lines$level[i])
+        sprintf("%s on %s", g$lines$label[i], if (is.na(date)) "no date (not reached)" else format(date, "%Y-%m-%d"))
+      }, "")
+      paste0(sprintf("Assumed %+g%% a month from today: ", input$assumedGrowth), paste(crossings, collapse = "; "), ".")
+    } else ""
     paste(head_text, sprintf("Projection from the last %s days.", format_number(input$fitDays)),
           describe("linear", sprintf("Straight line, %+.3f TiB a day", slope)),
-          describe("exponential", sprintf("Exponential, %+.2f%% a day", growth)))
+          describe("exponential", sprintf("Exponential, %+.2f%% a day", growth)), assumed_text)
   })
 
   # the growth plot's series, as x and y
@@ -1085,6 +1094,11 @@ server <- function(input, output, session) {
       projection <- project_growth(g$fit, input$growthHorizon)
       for (kind in unique(projection$fit)) series[[kind]] <- data.frame(x = projection$date[projection$fit == kind],
                                                                        y = projection$stored_tib[projection$fit == kind])
+    }
+    if (isTRUE(input$assumedGrowth != 0 && input$assumedGrowth > -100)) {
+      now <- tail(g$history, 1)
+      assumed <- assumed_growth(now$date, now$stored_tib, input$assumedGrowth, input$growthHorizon)
+      series$Assumed <- data.frame(x = assumed$date, y = assumed$stored_tib)
     }
     series
   })
@@ -1099,9 +1113,10 @@ server <- function(input, output, session) {
       parts <- c(parts, sprintf("stored %s TiB at radius %s%s", format_number(round(stored$y[near], 2)), stored$radius[near],
                                 if (stored$measure[near] == "whole reserve") " (older measure)" else ""))
     }
-    for (kind in intersect(c("Straight line", "Exponential"), names(series))) {
+    for (kind in intersect(c("Straight line", "Exponential", "Assumed"), names(series))) {
       value <- value_at(series[[kind]], at, max_gap = 0)
-      if (!is.na(value)) parts <- c(parts, sprintf("%s %s TiB", tolower(kind), format_number(round(value, 2))))
+      label <- if (kind == "Assumed") sprintf("assumed %+g%% a month", input$assumedGrowth) else tolower(kind)
+      if (!is.na(value)) parts <- c(parts, sprintf("%s %s TiB", label, format_number(round(value, 2))))
     }
     paste(parts, collapse = " | ")
   })
@@ -1119,12 +1134,17 @@ server <- function(input, output, session) {
       plot <- plot + geom_line(data = project_growth(g$fit, input$growthHorizon), aes(x = date, y = stored_tib, colour = fit),
                                linetype = "dashed", linewidth = 1.1)
     }
-    plot + scale_colour_manual(values = c("Stored data" = swarm_colours$text, "Stored data, older measure" = swarm_colours$muted,
-                                          "Straight line" = swarm_colours$orange, "Exponential" = swarm_colours$mint)) +
+    assumed_label <- sprintf("Assumed %+g%% a month", input$assumedGrowth)
+    assumed <- growth_series()$Assumed
+    if (!is.null(assumed)) {
+      plot <- plot + geom_line(data = assumed, aes(x = x, y = y, colour = assumed_label), linetype = "longdash", linewidth = 1.1)
+    }
+    plot + scale_colour_manual(values = setNames(c(swarm_colours$text, swarm_colours$muted, swarm_colours$orange, swarm_colours$mint, "#7aa6c2"),
+                                                 c("Stored data", "Stored data, older measure", "Straight line", "Exponential", assumed_label))) +
       scale_y_continuous(labels = function(x) format_number(x)) +
       swarm_plot_theme + swarm_readable_text +
       labs(x = NULL, y = "Stored data (TiB)",
-           caption = paste("Dashed: fits of the last days set above, extended to the horizon (projections). Dotted: radius changes.",
+           caption = paste("Dashed: fits of the last days set above, extended to the horizon (projections); long dashes: the assumed growth. Dotted: radius changes.",
                            "Grey: days before nodes reported their reserve within radius; their whole reserve overstates the stored data.",
                            sep = "\n")) +
       zoom_coord(zoom_limits(growth_zoom(), growth_series()), "date")

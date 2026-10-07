@@ -103,7 +103,7 @@ for (variant in variants) {
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
-                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180)
+                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -621,6 +621,11 @@ check("storage - the fit ignores days with too few reporting nodes", isTRUE(all.
 check("storage - a dump without status is marked", summarise_dump(data.frame(overlay = "a"), "2026-09-30")$measure == "no status")
 check("storage - too little history gives no fit", is.null(fit_growth(synthetic[nrow(synthetic) - 1:0, ], 90)))
 projection <- project_growth(fit, 30)
+grown <- assumed_growth(as.Date("2026-10-07"), 7, 10, 365)
+check("storage - assumed growth compounds per month", isTRUE(all.equal(tail(grown$stored_tib, 1), 7 * 1.1^(365 / (365.25 / 12)))) && nrow(grown) == 366)
+check("storage - assumed growth reaches a level on the right day",
+      identical(assumed_crossing(as.Date("2026-10-07"), 7, 10, 7 * 1.1^3), as.Date("2026-10-07") + floor(3 * 365.25 / 12)))
+check("storage - shrinking never reaches a higher level", is.na(assumed_crossing(as.Date("2026-10-07"), 7, -5, 8)))
 check("storage - the projection reaches the horizon for both fits", max(projection$date) == max(days) + 30 && setequal(projection$fit, c("Straight line", "Exponential")))
 
 # zoom and pointer helpers (R/time_plots.R)
@@ -637,7 +642,7 @@ check("pointer - outside a series gives NA", is.na(value_at(pts, as.numeric(as.D
 storage_history_data <- synthetic
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
-                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180)
+                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0)
   summary <- output$growth_summary
   check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
           grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date", summary, fixed = TRUE), summary)
@@ -662,6 +667,17 @@ testServer(server, {
   check("growth tab - the plot renders zoomed out again", !inherits(output_or_error(output$growthPlot), "output_error"))
   session$setInputs(growthPlot_brush = list(xmin = as.numeric(as.Date("2026-07-01")), xmax = as.numeric(as.Date("2026-09-01"))), growthPlot_zoomout = 1)
   check("growth tab - the Zoom out link renders the whole plot", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(assumedGrowth = 5)
+  summary_assumed <- output$growth_summary
+  now_row <- tail(synthetic, 1)
+  expected_date <- assumed_crossing(as.Date(current_time()), now_row$stored_tib, 5, 8)
+  check("growth tab - the assumed growth gives its own crossing dates", grepl("Assumed +5% a month from today", summary_assumed, fixed = TRUE),
+        summary_assumed)
+  session$setInputs(growthPlot_pointer = list(x = as.numeric(as.Date("2026-12-01")), y = 7))
+  check("growth tab - the pointer reads the assumed growth", grepl("assumed +5% a month", output$growthPlot_hover, fixed = TRUE))
+  check("growth tab - the plot renders with the assumed growth", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(assumedGrowth = 0)
+  check("growth tab - 0% leaves the assumed growth out", !grepl("Assumed", output$growth_summary) && is.null(isolate(growth_series())$Assumed))
   session$setInputs(fitDays = 3)
   check("growth tab - a fit window under 7 days shows a message", grepl("Fit over 7 days", output_or_error(output$growth_summary)))
 })
