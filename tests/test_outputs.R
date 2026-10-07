@@ -21,7 +21,7 @@ fixture <- jsonlite::fromJSON("tests/fixtures/swarmscan-sample.json", simplifyVe
 capture_dir <- tempfile("captures"); dir.create(capture_dir)
 src <- readLines("app.R")
 src <- src[!grepl("^shinyApp\\(", src)]
-for (table_output in c("stats_table", "nodes_data", "reachability_status")) {
+for (table_output in c("stats_table", "nodes_data", "reachability_status", "stakes_table")) {
   src <- sub(paste0("output\\$", table_output, " <- DT::renderDataTable\\("),
              paste0("output$", table_output, " <- capture_table('", table_output, "', "), src)
 }
@@ -75,7 +75,8 @@ expected_max_radius <- function(bits, minimum) {
 }
 
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "storage_taken", "max_radius", "max_capacity",
-                 "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data")
+                 "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
+                 "stakes_table")
 
 for (variant in variants) {
   data <- remove_fields(fixture, variant)
@@ -308,6 +309,23 @@ fake_rpc$fail <- FALSE
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE)
   check("chain - the sidebar shows the chain status", grepl("staked overlays", output$chain_status))
+
+  # Nodes info: the stakes table has every staked overlay, its nbhood and its latest reveal
+  output$stakes_table
+  stakes_info <- captured("stakes_table")
+  chain <- chain_cache$data
+  check("stakes table - one row per staked overlay", nrow(stakes_info) == nrow(chain$stakes) &&
+          setequal(stakes_info$overlay, chain$stakes$overlay))
+  check("stakes table - nbhood is the overlay prefix at the radius",
+        all(stakes_info$nbhood == substr(overlay_to_bits(stakes_info$overlay), 1, 9)))
+  latest_round <- tapply(chain$reveals$round, chain$reveals$overlay, max)
+  revealed <- !is.na(stakes_info$last_round)
+  check("stakes table - last round is the overlay's latest reveal",
+        sum(revealed) == length(latest_round) && all(stakes_info$last_round[revealed] == latest_round[stakes_info$overlay[revealed]]))
+  check("stakes table - in swarmscan matches the dump", identical(stakes_info$in_swarmscan, stakes_info$overlay %in% fixture$nodes$overlay))
+  session$setInputs(storageRadius = 4)
+  output$stakes_table
+  check("stakes table - nbhood follows the radius", all(nchar(captured("stakes_table")$nbhood) == 4))
 })
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
