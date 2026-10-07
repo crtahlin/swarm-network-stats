@@ -554,14 +554,15 @@ since_first <- as.numeric(difftime(chain$head_time, raw_price$time[1], units = "
 check("price - observed change from the first update when the history is shorter",
       isTRUE(all.equal(observed_drift(chain$prices, chain$price, chain$head_time, 2), log(chain$price / raw_price$price[1]) / since_first)))
 check("price - no history gives no observed change", is.na(observed_drift(chain$prices[0, ], chain$price, chain$head_time, 1)))
-# the block time from the fixture's reveals by hand: first and last reveal in the window
-raw_rev <- Filter(function(l) l$topics[[1]] == chain_topics$revealed && hex_to_number(l$blockNumber) >= chain$window_start,
-                  chain_fixture$logs[[tolower(chain_contracts$redistribution$address)]])
-rev_block <- vapply(raw_rev, function(l) hex_to_number(l$blockNumber), 0); rev_time <- vapply(raw_rev, function(l) hex_to_number(l$blockTimestamp), 0)
-by_hand <- (rev_time[which.max(rev_block)] - rev_time[which.min(rev_block)]) / (max(rev_block) - min(rev_block))
-check("price - the block time is measured from the reveals", isTRUE(all.equal(measured_block_seconds(chain), by_hand)) &&
-        by_hand > 4.5 && by_hand < 6, by_hand)
-check("price - too few blocks give no measured block time", is.na(measured_block_seconds(list(reveals = chain$reveals[1, ]))))
+# the block time comes from the block headers of the window start and the head: the fake chain's
+# headers are 5 seconds apart, then 5.11
+check("price - the block time is measured from the block headers", isTRUE(all.equal(measured_block_seconds(chain), 5)))
+fake_rpc$seconds_per_block <- 5.11
+check("price - a slower chain gives a longer block time", abs(measured_block_seconds(fetch_chain_data()) - 5.11) < 0.001)
+fake_rpc$seconds_per_block <- 5
+check("price - too few blocks give no measured block time",
+      is.na(measured_block_seconds(list(to_block = 100, window_start = 50, head_time = chain$head_time, window_start_time = chain$head_time))) &&
+        is.na(measured_block_seconds(list(to_block = 1e6, window_start = 0))))
 stats <- round_stats(chain, 0.25)
 truth_rounds_window <- unique(truth_rounds)
 complete <- truth_rounds_window[truth_rounds_window <= chain$to_block %/% 152 - 1 & truth_rounds_window >= ceiling(chain$window_start / 152)]
