@@ -38,6 +38,15 @@ captured <- function(name) readRDS(file.path(capture_dir, paste0(name, ".rds")))
 suppressWarnings(suppressPackageStartupMessages(eval(parse(text = src))))
 # the chain answers from tests/fixtures/chain-sample.json; its window is 6 hours, as recorded
 source("tests/fake_rpc.R")
+# bee's default bootnodes resolve through a fake lookup: two levels of dnsaddr records, three bootnodes on two IP addresses,
+# one of them with a WSS address too (shaped like mainnet.ethswarm.org on 2026-10-07)
+fake_dns <- list(
+  "mainnet.ethswarm.org" = "dnsaddr=/dnsaddr/eu.mainnet.ethswarm.org",
+  "eu.mainnet.ethswarm.org" = c("dnsaddr=/dnsaddr/a.mainnet.ethswarm.org", "dnsaddr=/dnsaddr/b.mainnet.ethswarm.org"),
+  "a.mainnet.ethswarm.org" = c("dnsaddr=/ip4/198.18.1.1/tcp/1634/p2p/QmA", "dnsaddr=/ip4/198.18.1.1/tcp/1635/tls/sni/198-18-1-1.k.libp2p.direct/ws/p2p/QmA",
+                               "dnsaddr=/ip4/198.18.1.1/tcp/1636/p2p/QmB"),
+  "b.mainnet.ethswarm.org" = "dnsaddr=/ip4/198.18.1.2/tcp/1634/p2p/QmC")
+doh_txt <- function(name) { r <- fake_dns[[name]]; if (is.null(r)) character(0) else r }
 chain_window_days <- 0.25
 # the saved storage history changes as it is extended; the tests use their own
 storage_history_data <- read_storage_history(tempfile())
@@ -81,7 +90,8 @@ all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoo
                  "price_balance", "price_balance_note", "price_balance_text",
                  "light_verdict", "light_capable", "light_capable_note", "light_places", "light_places_note", "light_transport_note",
                  "light_input_warning", "light_most", "light_most_note", "light_load", "light_load_note", "light_list_note",
-                 "light_takes", "light_start_burst", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
+                 "light_takes", "light_start_burst", "lightPlot", "bootnode_list_note", "bootnode_concurrent", "bootnode_concurrent_note",
+                 "bootnode_max_joins", "bootnode_max_joins_note", "bootnode_hosts", "bootnode_lose_host", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -108,7 +118,8 @@ for (variant in variants) {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
                         participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
                         clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
-                        listNodes = 0, expectedClients = 4000)
+                        listNodes = 0, expectedClients = 4000, bootnodeSource = "default", bootnodeWssOnly = FALSE,
+                        joinsPerMinute = 600, bootnodeHoldSecs = 30, bootnodesDialled = 3, bootnodeLimit = 100)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -655,7 +666,8 @@ testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
                     participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
                         clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
-                        listNodes = 0, expectedClients = 4000)
+                        listNodes = 0, expectedClients = 4000, bootnodeSource = "default", bootnodeWssOnly = FALSE,
+                        joinsPerMinute = 600, bootnodeHoldSecs = 30, bootnodesDialled = 3, bootnodeLimit = 100)
   summary <- output$growth_summary
   check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
           grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date (not reached)", summary, fixed = TRUE) &&
@@ -799,6 +811,57 @@ testServer(server, {
   check("light tab - few clients fit", grepl("Within capacity", output$light_verdict$html))
 })
 fetch_swarmscan_data <- function() fixture
+
+### bootnode load (R/bootnodes.R)
+resolved <- resolve_dnsaddr(bee_default_bootnode, doh_txt)
+check("bootnodes - dnsaddr resolves through two levels", length(resolved) == 4 && all(startsWith(resolved, "/ip4/")))
+check("bootnodes - a loop of dnsaddr records stops", length(resolve_dnsaddr("/dnsaddr/loop", function(n) "dnsaddr=/dnsaddr/loop")) == 0)
+check("bootnodes - pasted multiaddresses", identical(parse_multiaddrs("/ip4/1.2.3.4/tcp/1/p2p/A, junk\n/dns4/x.y/tcp/2/p2p/B "),
+                                                      c("/ip4/1.2.3.4/tcp/1/p2p/A", "/dns4/x.y/tcp/2/p2p/B")))
+bt <- bootnode_table(resolved)
+check("bootnodes - peers, hosts and WSS", length(unique(bt$peer)) == 3 && length(unique(bt$host)) == 2 && sum(bt$wss) == 1)
+# by hand: 600 joins a minute = 10 a second, kept 30 s, 3 bootnodes dialled of 3: 300 concurrent per bootnode, 3x a limit of 100;
+# 100 x 3 x 60 / (30 x 3) = 200 joins a minute
+bl <- bootnode_load(3, 600, 30, 3, 100)
+check("bootnodes - Little's law", bl$concurrent == 300 && bl$load == 3 && bl$max_joins_per_min == 200)
+check("bootnodes - a client cannot dial more bootnodes than there are", bootnode_load(2, 600, 30, 5, 100)$per_client == 2)
+# a bootnode with addresses on two hosts counts once, on the first; the totals stay those of the model
+two_hosts <- bootnode_table(c(resolved, "/ip6/2001:db8::1/tcp/1634/p2p/QmC"))
+bh2 <- bootnode_hosts(two_hosts, 600, 30, 3, 100)
+check("bootnodes - a bootnode on two hosts is counted once", bh2$bootnodes == 3 && sum(bh2$hosts$bootnodes) == 3 &&
+        sum(bh2$hosts$concurrent) == 3 * bh2$load$concurrent)
+# the cache keeps the last good list when part of the lookup fails, and tries again sooner
+bootnode_cache$next_attempt <- -Inf
+check("bootnodes - the cache resolves the default list", length(refresh_bootnode_cache(doh_txt)) == 4 && is.null(bootnode_cache$last_error))
+partial <- function(name) if (name == "b.mainnet.ethswarm.org") character(0) else doh_txt(name)
+bootnode_cache$next_attempt <- -Inf
+check("bootnodes - a partial answer keeps the last good list", length(refresh_bootnode_cache(partial)) == 4 &&
+        grepl("b.mainnet.ethswarm.org", bootnode_cache$last_error) &&
+        as.numeric(bootnode_cache$next_attempt) - as.numeric(current_time()) <= retry_with_data_secs)
+bootnode_cache$next_attempt <- -Inf; refresh_bootnode_cache(doh_txt)
+bh <- bootnode_hosts(bt, 600, 30, 3, 100)
+check("bootnodes - per IP address and losing the busiest", bh$bootnodes == 3 && bh$busiest_host == "198.18.1.1" &&
+        identical(bh$hosts$bootnodes, c(2L, 1L)) && bh$without_busiest$per_client == 1 && bh$without_busiest$concurrent == 300)
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, bootnodeSource = "default", bootnodeWssOnly = FALSE,
+                    joinsPerMinute = NA, bootnodeHoldSecs = NA, bootnodesDialled = NA, bootnodeLimit = 100)
+  check("bootnode tab - the default list is resolved and described", grepl("3 bootnodes (peer IDs) on 2 IP addresses", output$bootnode_list_note, fixed = TRUE),
+        output$bootnode_list_note)
+  check("bootnode tab - no load until the client's numbers are set", grepl("–", output$bootnode_concurrent$html) && output$bootnode_max_joins == "–")
+  session$setInputs(joinsPerMinute = 600, bootnodeHoldSecs = 30, bootnodesDialled = 3)
+  check("bootnode tab - concurrent connections and the max join rate", grepl(">300<", output$bootnode_concurrent$html) && output$bootnode_max_joins == "200")
+  check("bootnode tab - the host table and losing the busiest host", grepl("198.18.1.1", output$bootnode_hosts) &&
+          grepl("If 198.18.1.1 (2 of the 3 bootnodes) is lost", output$bootnode_lose_host, fixed = TRUE))
+  session$setInputs(bootnodeWssOnly = TRUE)
+  check("bootnode tab - WSS only keeps the bootnodes with a WSS address", grepl("1 bootnodes (peer IDs)", output$bootnode_list_note, fixed = TRUE))
+  session$setInputs(bootnodeSource = "pasted", bootnodeList = "/ip4/198.18.2.1/tcp/1634/p2p/QmX")
+  check("bootnode tab - WSS only with no WSS address says so", grepl("None of these bootnodes has a WSS address", output_or_error(output$bootnode_list_note)))
+  session$setInputs(bootnodeSource = "default")
+  session$setInputs(bootnodeWssOnly = FALSE, bootnodeSource = "pasted", bootnodeList = "")
+  check("bootnode tab - an empty pasted list asks for addresses", grepl("Paste one or more multiaddresses", output_or_error(output$bootnode_list_note)))
+  session$setInputs(bootnodeList = "/ip4/198.18.2.1/tcp/1634/p2p/QmX\n/ip4/198.18.2.2/tcp/1634/p2p/QmY")
+  check("bootnode tab - a pasted list", grepl("2 bootnodes (peer IDs) on 2 IP addresses", output$bootnode_list_note, fixed = TRUE))
+})
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)
