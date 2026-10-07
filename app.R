@@ -440,7 +440,7 @@ ui <-
                           p("With the set minimum required nodes per neighbourhood")),
                 value_box(title = "Maximum capacity", value = textOutput("max_capacity"),
                           p("Of storage at that radius, in TiB (2^40 bytes)")),
-                value_box(title = "Radius the nodes report", value = textOutput("reported_radius"),
+                value_box(title = "Committed depth the nodes report", value = textOutput("reported_radius"),
                           p("The most common committed depth (storage radius + reserve doubling), from all nodes whatever the filter"))
               )
               ), 
@@ -449,7 +449,7 @@ ui <-
     nav_panel("Reachability",
               div(class = "section-label", "Reachability of nodes"),
               p("\"Reached by swarmscan\" is swarmscan's own check. \"Reachable (self-reported)\" is what the node reports ",
-                "about itself in its status snapshot, known only for nodes swarmscan reached. swarmscan sets \"Full node\" only ",
+                "about itself in its status snapshot; it is unknown when there is no snapshot or swarmscan could not get one. swarmscan sets \"Full node\" only ",
                 "on nodes it reached, so \"Show only full nodes\" leaves out every node it did not reach."),
               DT::dataTableOutput("reachability_status")),
     
@@ -1621,9 +1621,13 @@ server <- function(input, output, session) {
     nodes <- filtered_nodes_reactive()
     yes_no <- function(x) ifelse(is.na(x), "unknown", ifelse(x, "yes", "no"))
     reached <- if (is.null(nodes$unreachable)) rep(NA, nrow(nodes)) else !(nodes$unreachable %in% TRUE)
+    # a snapshot that failed (its error is set) has every field zeroed, so isReachable = false there
+    # is not the node's answer
     self <- nodes[["statusSnapshot"]][["isReachable"]]
-    counts <- as.data.frame(table(full = yes_no(nodes$fullNode), reached = ifelse(reached %in% FALSE, "no", "yes"),
-                                  self = yes_no(if (is.null(self)) rep(NA, nrow(nodes)) else self)), stringsAsFactors = FALSE)
+    if (is.null(self)) self <- rep(NA, nrow(nodes))
+    self[has_text(nodes[["statusSnapshot"]][["error"]])] <- NA
+    counts <- as.data.frame(table(full = yes_no(nodes$fullNode), reached = yes_no(reached), self = yes_no(self)),
+                            stringsAsFactors = FALSE)
     counts <- counts[counts$Freq > 0, ]
     counts[order(-counts$Freq), ]
   },
@@ -1667,12 +1671,13 @@ server <- function(input, output, session) {
     return(storageRadius = radius)
   })
   
-  # return max radius
+  # the network's radius as the nodes report it, as a cross-check for the computed maximum
   output$reported_radius <- renderText({
     radius <- typical_storage_radius(swarm_data()$nodes)
     if (is.null(radius)) "–" else format_number(radius)
   })
 
+  # return max radius
   output$max_radius <- renderText({
     format_number(max_capacity_radius())
   })

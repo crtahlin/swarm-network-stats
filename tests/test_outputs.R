@@ -951,11 +951,25 @@ testServer(server, {
   check("reachability - swarmscan's flag is counted", sum(r$Freq[r$reached == "no"]) == sum(n$unreachable %in% TRUE) &&
           sum(r$Freq[r$reached == "no"]) > 0)
   check("reachability - self-reported reachability is counted", sum(r$Freq[r$self == "yes"]) == sum(n$statusSnapshot$isReachable %in% TRUE))
+  # a failed snapshot (error set, fields zeroed) is not a self-report
+  failed <- !is.na(n$statusSnapshot$error) & nzchar(n$statusSnapshot$error)
+  check("reachability - a failed snapshot counts as unknown, not as unreachable",
+        sum(r$Freq[r$self == "no"]) == sum(n$statusSnapshot$isReachable %in% FALSE & !failed) && sum(failed & n$statusSnapshot$isReachable %in% FALSE) > 0,
+        paste(sum(r$Freq[r$self == "no"]), sum(failed)))
   session$setInputs(onlyFullNodes = TRUE)
   output$reachability_status
   check("reachability - with only full nodes, every node was reached", all(captured("reachability_status")$reached == "yes"))
-  check("data - the radius the nodes report", output$reported_radius == format_number(typical_storage_radius(swarm_cache$data$nodes)))
+  check("data - the committed depth the nodes report", output$reported_radius == "9")
 })
+# a dump without swarmscan's unreachable flag shows "unknown", not "yes"
+saved_cache <- swarm_cache$data
+swarm_cache$data$nodes$unreachable <- NULL
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days)
+  output$reachability_status
+  check("reachability - without the unreachable flag, reached is unknown", all(captured("reachability_status")$reached == "unknown"))
+})
+swarm_cache$data <- saved_cache
 
 ### the sidebar shows each setting only on the tabs it applies to (#69)
 # tabs that hide the radius keep working with an invalid one typed on another tab
