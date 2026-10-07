@@ -21,7 +21,7 @@ fixture <- jsonlite::fromJSON("tests/fixtures/swarmscan-sample.json", simplifyVe
 capture_dir <- tempfile("captures"); dir.create(capture_dir)
 src <- readLines("app.R")
 src <- src[!grepl("^shinyApp\\(", src)]
-for (table_output in c("stats_table", "nodes_data", "reachability_status", "stakes_table")) {
+for (table_output in c("stats_table", "nodes_data", "reachability_status", "stakes_table", "nbhood_nodes")) {
   src <- sub(paste0("output\\$", table_output, " <- DT::renderDataTable\\("),
              paste0("output$", table_output, " <- capture_table('", table_output, "', "), src)
 }
@@ -74,7 +74,7 @@ expected_max_radius <- function(bits, minimum) {
   radius
 }
 
-all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "storage_taken", "max_radius", "max_capacity",
+all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text", "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
 
@@ -97,7 +97,7 @@ for (variant in variants) {
 
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
-      session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full)
+      session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -341,6 +341,72 @@ testServer(server, {
   session$setInputs(storageRadius = 4)
   output$stakes_table
   check("stakes table - nbhood follows the radius", all(nchar(captured("stakes_table")$nbhood) == 4))
+})
+
+### Nbhood map (R/nbhood_map.R)
+# Z-order: every nbhood has its own position, and sister nbhoods (differing only in the last bit) touch
+for (radius in c(4, 5)) {
+  xy <- zorder_xy(nbhood_names(radius))
+  sister <- match(paste0(substr(xy$nbhood, 1, radius - 1), ifelse(substr(xy$nbhood, radius, radius) == "0", "1", "0")), xy$nbhood)
+  check(sprintf("map radius %d - one position per nbhood", radius), !anyDuplicated(paste(xy$x, xy$y)) &&
+          max(xy$x) + 1 == 2^ceiling(radius / 2) && max(xy$y) + 1 == 2^floor(radius / 2))
+  check(sprintf("map radius %d - sister nbhoods are next to each other", radius),
+        all(abs(xy$x - xy$x[sister]) + abs(xy$y - xy$y[sister]) == 1))
+}
+
+chain <- fetch_chain_data()
+dump <- prepare_nodes_data(fixture)
+latest <- last_reveals(chain, 0.25)
+for (radius in c(4, 9)) {
+  members <- nbhood_members(chain$stakes, latest, dump, radius)
+  label <- sprintf("map radius %d", radius)
+  staked_rows <- members[members$kind != node_kinds[["unstaked"]], ]
+  # a staked node with height d is listed in 2^d nbhoods, all sharing its first radius - d bits
+  times <- table(staked_rows$overlay)[chain$stakes$overlay]
+  check(paste(label, "- a staked node is listed 2^height times"), all(as.vector(times) == 2^chain$stakes$height))
+  bits <- overlay_to_bits(staked_rows$overlay)
+  height <- chain$stakes$height[match(staked_rows$overlay, chain$stakes$overlay)]
+  check(paste(label, "- each listing shares the overlay's first radius - height bits"),
+        all(substr(staked_rows$nbhood, 1, radius - height) == substr(bits, 1, radius - height)) && !anyDuplicated(paste(staked_rows$overlay, staked_rows$nbhood)))
+  check(paste(label, "- active means a reveal in the window"),
+        identical(sort(unique(staked_rows$overlay[staked_rows$kind == node_kinds[["active"]]])), sort(intersect(latest$overlay, chain$stakes$overlay))))
+  full <- dump[dump$fullNode %in% TRUE & !(dump$overlay %in% chain$stakes$overlay), ]
+  unstaked_rows <- members[members$kind == node_kinds[["unstaked"]], ]
+  check(paste(label, "- full nodes without stake are listed once, in their own nbhood"),
+        nrow(unstaked_rows) == nrow(full) && all(unstaked_rows$nbhood == substr(full$overlay_binary, 1, radius)))
+  for (show in c(FALSE, TRUE)) {
+    tiles <- nbhood_tiles(members, radius, show)
+    check(sprintf("%s, unstaked shown %s - one tile per nbhood, counts add up", label, show),
+          nrow(tiles) == 2^radius && sum(tiles$active) == sum(members$kind == node_kinds[["active"]]) &&
+            sum(tiles$idle) == sum(members$kind == node_kinds[["idle"]]) && sum(tiles$unstaked) == nrow(unstaked_rows) &&
+            all(tiles$shown == tiles$active + if (show) tiles$unstaked else 0) &&
+            all(as.character(tiles$class) == ifelse(tiles$shown >= 4, "4 or more", as.character(tiles$shown))))
+  }
+}
+
+# hover and click: the tile under the pointer, its summary, and its nodes
+testServer(server, {
+  session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE)
+  members <- nbhood_members(chain_cache$data$stakes, last_reveals(chain_cache$data, 0.25), swarm_cache$data$nodes, 4)
+  tiles <- nbhood_tiles(members, 4, FALSE)
+  busiest <- tiles[which.max(tiles$active + tiles$idle), ]
+  session$setInputs(nbhoodHover = list(x = busiest$x + 0.3, y = -busiest$y - 0.3))
+  check("map - hover names the tile under the pointer", output$nbhood_hover_text == nbhood_summary(busiest, FALSE))
+  session$setInputs(nbhoodHover = list(x = 100, y = 100))
+  check("map - hover outside the tiles asks to point at one", grepl("Point at a neighbourhood", output$nbhood_hover_text))
+  session$setInputs(nbhoodClick = list(x = busiest$x, y = -busiest$y))
+  check("map - click selects the tile", output$nbhood_selected_text == paste("Nodes in neighbourhood", busiest$nbhood))
+  output$nbhood_nodes
+  listed <- captured("nbhood_nodes")
+  check("map - the table lists the staked nodes of that nbhood",
+        nrow(listed) == busiest$active + busiest$idle && all(listed$kind != node_kinds[["unstaked"]]))
+  session$setInputs(showUnstaked = TRUE)
+  output$nbhood_nodes
+  check("map - with non-staking nodes shown, the table adds them", nrow(captured("nbhood_nodes")) == busiest$active + busiest$idle + busiest$unstaked)
+  session$setInputs(storageRadius = 5)
+  check("map - changing the radius clears the selection", grepl("Click a neighbourhood", output$nbhood_selected_text))
+  session$setInputs(activeDays = 0)
+  check("map - an active period of 0 shows a message", grepl("Enter an active period", output_or_error(output$nbhood_hover_text)))
 })
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
