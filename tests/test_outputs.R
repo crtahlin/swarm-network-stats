@@ -323,6 +323,9 @@ testServer(server, {
   check("stakes table - last round is the overlay's latest reveal",
         sum(revealed) == length(latest_round) && all(stakes_info$last_round[revealed] == latest_round[stakes_info$overlay[revealed]]))
   check("stakes table - in swarmscan matches the dump", identical(stakes_info$in_swarmscan, stakes_info$overlay %in% fixture$nodes$overlay))
+  header <- as.character(stakes_table_header())
+  check("stakes table - every column has a header with an explanation",
+        length(stakes_table_columns) == ncol(stakes_info) && lengths(regmatches(header, gregexpr("<th title=\"[^\"]+\"", header))) == ncol(stakes_info))
   session$setInputs(storageRadius = 4)
   output$stakes_table
   check("stakes table - nbhood follows the radius", all(nchar(captured("stakes_table")$nbhood) == 4))

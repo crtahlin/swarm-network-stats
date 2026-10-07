@@ -235,6 +235,27 @@ data_status_text <- function() {
 source("R/chain.R", local = TRUE)
 
 
+# column names of the staked-nodes table on the Nodes info tab, each with the explanation its
+# header shows on hover
+stakes_table_columns <- c(
+  "Neighbourhood" = "The overlay's neighbourhood at the storage radius set in the sidebar",
+  "Overlay" = "The node's overlay address, as registered with its stake",
+  "Stake (BZZ)" = "The amount deposited",
+  "Effective stake (BZZ)" = "What the redistribution game counts: the committed stake at today's price, capped at the deposit, and 0 while frozen",
+  "Height" = "Reserve doubling: how many times the node has doubled its storage",
+  "Frozen" = "Whether the stake is currently frozen",
+  "Can play" = "Whether the node can take part in the game now: staked at least 2 rounds ago and not frozen",
+  "Last reveal (UTC)" = "Time of the node's latest reveal in the last 30 days; empty if it has not played in that time",
+  "Last round" = "Round of the node's latest reveal in the last 30 days; empty if it has not played in that time",
+  "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
+  "In swarmscan" = "Whether swarmscan lists the node at all"
+)
+stakes_table_header <- function() {
+  tags$table(class = "display", tags$thead(tags$tr(
+    lapply(names(stakes_table_columns), function(name) tags$th(title = stakes_table_columns[[name]], name)))))
+}
+
+
 ### LOOK AND FEEL
 # dark slate, orange and mint, after the colours of ethswarm.org (not an exact copy).
 # Space Grotesk for text; JetBrains Mono for labels, figures, tables and overlay bit strings.
@@ -601,8 +622,8 @@ server <- function(input, output, session) {
     )
     stakes_info[order(stakes_info$nbhood, -stakes_info$effective_stake), ]
   },
-  colnames = c("Neighbourhood", "Overlay", "Stake (BZZ)", "Effective stake (BZZ)", "Height", "Frozen", "Can play",
-               "Last reveal (UTC)", "Last round", "Matched truth", "In swarmscan"),
+  # column headers with an explanation shown when the pointer rests on them (the title attribute)
+  container = stakes_table_header(),
   rownames = FALSE
   )
 
