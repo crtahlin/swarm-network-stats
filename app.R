@@ -380,7 +380,19 @@ swarm_readable_text <- theme(
 
 ### APPLICATION
 ### UI part
-ui <- 
+# the tabs each sidebar setting applies to; the sidebar shows a setting only while one of them is open
+setting_tabs <- list(
+  storageRadius = c("Nbhood plot", "Nbhood map", "Price projection", "Storage growth", "Nbhoods stats", "Nodes info"),
+  minNodesPerNbhood = c("Data"),
+  onlyFullNodes = c("Map", "Data", "Reachability", "Nbhood plot", "Nbhoods stats", "Nodes info"),
+  activeDays = c("Nbhood map", "Price projection", "Nodes info")
+)
+# a sidebar setting shown only on its tabs. The input keeps its value while it is hidden
+for_tabs <- function(setting, input) {
+  conditionalPanel(sprintf("[%s].includes(input.tab)", paste0("'", setting_tabs[[setting]], "'", collapse = ", ")), input)
+}
+
+ui <-
   page_navbar(
     title = span(span(class = "hex", HTML("&#x2B22;")), "swarm network stats"),
     theme = swarm_theme,
@@ -389,16 +401,20 @@ ui <-
     fillable = FALSE,
     header = tags$style(HTML(swarm_css)),
     # settings part
+    id = "tab",
     sidebar = sidebar(title = "Settings",
                       # 9 until data arrives; then the radius most nodes report (see server)
-                      numericInput("storageRadius", "Storage radius",
-                                   value = 9, min = 1, max = 16, step = 1),
-                      numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
-                                   value = 2, min = 1, max = 8),
-                      checkboxInput("onlyFullNodes", "Show only full nodes",
-                                    value = TRUE),
-                      numericInput("activeDays", "Active within (days)",
-                                   value = chain_window_days, min = 1, max = chain_window_days, step = 1),
+                      for_tabs("storageRadius", numericInput("storageRadius", "Storage radius",
+                                                             value = 9, min = 1, max = 16, step = 1)),
+                      for_tabs("minNodesPerNbhood", numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
+                                                                 value = 2, min = 1, max = 8)),
+                      for_tabs("onlyFullNodes", checkboxInput("onlyFullNodes", "Show only full nodes",
+                                                              value = TRUE)),
+                      for_tabs("activeDays", numericInput("activeDays", "Active within (days)",
+                                                          value = chain_window_days, min = 1, max = chain_window_days, step = 1)),
+                      conditionalPanel(sprintf("![%s].includes(input.tab)",
+                                               paste0("'", unique(unlist(setting_tabs)), "'", collapse = ", ")),
+                                       p("No setting applies to this tab.")),
                       textOutput("data_status"),
                       textOutput("chain_status")),
     # panels part
