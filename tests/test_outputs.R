@@ -280,6 +280,18 @@ split <- fetch_chain_data()
 check("chain - refused log queries are split and give the same data", same_data(split, chain) && fake_rpc$requests > 10)
 fake_rpc$max_logs <- Inf
 
+# a network error or timeout on a log query stops the read at once instead of splitting the query
+answering_post <- rpc_post
+rpc_post <- function(body) {
+  if (!is.null(names(body)) && body$method == "eth_getLogs") { log_queries <<- log_queries + 1; stop("Timeout was reached") }
+  answering_post(body)
+}
+log_queries <- 0
+timed_out <- tryCatch(fetch_chain_data(), error = function(e) e)
+rpc_post <- answering_post
+check("chain - a timed-out log query is not split", inherits(timed_out, "error") && log_queries == 1,
+      paste(log_queries, "log queries"))
+
 # an update reads only the new blocks and ends with the same data as one full read
 fake_rpc$head <- chain_fixture$head_block - 2000
 older <- fetch_chain_data()

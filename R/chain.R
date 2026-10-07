@@ -46,9 +46,14 @@ rpc_post <- function(body) {
   jsonlite::fromJSON(httr::content(response, as = "text", encoding = "UTF-8"), simplifyVector = TRUE)
 }
 
+# an error the RPC answered with (class rpc_refused) differs from a network error or timeout:
+# only a refusal is worth retrying with a smaller query
 rpc_call <- function(method, params = list()) {
   answer <- rpc_post(list(jsonrpc = "2.0", id = 1, method = method, params = params))
-  if (!is.null(answer$error)) stop("the Gnosis RPC refused ", method, ": ", answer$error$message)
+  if (!is.null(answer$error)) {
+    stop(structure(class = c("rpc_refused", "error", "condition"),
+                   list(message = paste0("the Gnosis RPC refused ", method, ": ", answer$error$message), call = NULL)))
+  }
   answer$result
 }
 
@@ -98,13 +103,14 @@ abi_word <- function(data, n) substr(sub("^0x", "", data), 64 * (n - 1) + 1, 64 
 
 ### log queries
 # logs of one event from one contract between two blocks. A query the RPC refuses (most often
-# for returning too many results) is split in halves and retried
+# for returning too many results) is split in halves and retried. A network error or timeout
+# stops the read at once: splitting would only repeat it, each time waiting for the timeout
 fetch_logs <- function(address, topic, from_block, to_block) {
   if (from_block > to_block) return(list())
   result <- tryCatch(
     rpc_call("eth_getLogs", list(list(address = address, topics = list(topic),
                                       fromBlock = sprintf("0x%x", from_block), toBlock = sprintf("0x%x", to_block)))),
-    error = function(e) e)
+    rpc_refused = function(e) e)
   if (!inherits(result, "error")) return(if (length(result) == 0) list() else list(result))
   if (to_block - from_block < logs_min_span) stop(conditionMessage(result))
   middle <- from_block + (to_block - from_block) %/% 2
@@ -240,7 +246,7 @@ chain_stakes <- function(chain) chain$stakes
 # the current price and the price updates in the window, in PLUR per chunk per block
 chain_price <- function(chain) list(current = chain$price, history = chain$prices)
 
-# the latest reveal of each overlay within the last `days` days, joined to its stake
+# the latest reveal of each overlay within the last `days` days
 last_reveals <- function(chain, days) {
   reveals <- chain$reveals[chain$reveals$time >= chain$head_time - days * 86400, ]
   reveals <- reveals[order(reveals$block, decreasing = TRUE), ]
