@@ -51,7 +51,9 @@ summarise_dump <- function(nodes, date) {
   measure <- if (nrow(r) == 0) "no status" else if (field == "reserveSize") "whole reserve" else "within radius"
   data.frame(date = as.Date(date), measure = measure,
              nodes = nrow(nodes), nodes_reporting = nrow(r),
-             radius_mode = if (nrow(r)) as.integer(names(which.max(table(r$radius)))) else NA_integer_,
+             # the network's radius: the most common committed depth (storage radius + doubling), so
+             # that doubled nodes, which report a storage radius d lower, do not pull it down
+             radius_mode = if (nrow(r)) as.integer(names(which.max(table(r$radius + r$doubling)))) else NA_integer_,
              reserve_median = if (nrow(r)) median(r$reserve) else NA_real_,
              fullness_median = if (nrow(r)) median(fullness) else NA_real_,
              fullness_p90 = if (nrow(r)) unname(stats::quantile(fullness, 0.9)) else NA_real_,
