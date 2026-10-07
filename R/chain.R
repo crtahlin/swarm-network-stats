@@ -35,6 +35,10 @@ chain_refresh_secs <- 10 * 60
 rpc_timeout_secs <- 30
 rpc_batch_size <- 250                # eth_calls per batch request
 logs_min_span <- 1000                # a log query that fails is split in halves down to this many blocks
+# no log query spans more blocks than this: over 50,000 results rpc.gnosischain.com can answer with
+# an empty list instead of an error (issue #50). 1,000,000 blocks is about 58 days, or about 21,000
+# reveals at the rate of October 2026
+logs_max_span <- 1e6
 
 # the RPC endpoint; SWARM_RPC_URL overrides the public Gnosis endpoint
 chain_rpc_url <- function() {
@@ -109,11 +113,16 @@ hex_to_number <- function(hex) {
 abi_word <- function(data, n) substr(sub("^0x", "", data), 64 * (n - 1) + 1, 64 * n)
 
 ### log queries
-# logs of one event from one contract between two blocks. A query the RPC refuses (most often
-# for returning too many results) is split in halves and retried. A network error or timeout
-# stops the read at once: splitting would only repeat it, each time waiting for the timeout
+# logs of one event from one contract between two blocks. A range longer than logs_max_span is read
+# in pieces of that length. A query the RPC refuses (most often for returning too many results) is
+# split in halves and retried. A network error or timeout stops the read at once: splitting would
+# only repeat it, each time waiting for the timeout
 fetch_logs <- function(address, topic, from_block, to_block) {
   if (from_block > to_block) return(list())
+  if (to_block - from_block + 1 > logs_max_span) {
+    starts <- seq(from_block, to_block, by = logs_max_span)
+    return(do.call(c, lapply(starts, function(s) fetch_logs(address, topic, s, min(s + logs_max_span - 1, to_block)))))
+  }
   result <- tryCatch(
     rpc_call("eth_getLogs", list(list(address = address, topics = list(topic),
                                       fromBlock = sprintf("0x%x", from_block), toBlock = sprintf("0x%x", to_block)))),
