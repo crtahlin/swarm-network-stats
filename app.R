@@ -245,8 +245,8 @@ stakes_table_columns <- c(
   "Height" = "Reserve doubling: how many times the node has doubled its storage",
   "Frozen" = "Whether the stake is currently frozen",
   "Can play" = "Whether the node can take part in the game now: staked at least 2 rounds ago and not frozen",
-  "Last reveal (UTC)" = "Time of the node's latest reveal in the last 30 days; empty if it has not played in that time",
-  "Last round" = "Round of the node's latest reveal in the last 30 days; empty if it has not played in that time",
+  "Last reveal (UTC)" = paste0("Time of the node's latest reveal in the last ", chain_window_days, " days; empty if it has not played in that time"),
+  "Last round" = paste0("Round of the node's latest reveal in the last ", chain_window_days, " days; empty if it has not played in that time"),
   "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
   "In swarmscan" = "Whether swarmscan lists the node at all"
 )
@@ -389,7 +389,7 @@ ui <-
               br(),
               div(class = "section-label", "Staked nodes (Gnosis chain)"),
               p("Every overlay with stake in the staking contract, and its latest reveal in the redistribution game ",
-                "within the last 30 days. Effective stake is what the game weighs: the committed stake at today's ",
+                "within the last ", chain_window_days, " days. Effective stake is what the game weighs: the committed stake at today's ",
                 "price, capped at the deposit, and 0 while frozen. A node can play once its stake is at least 2 rounds ",
                 "old and not frozen. The truth match is empty for a round that has not been claimed."),
               DT::dataTableOutput("stakes_table"))
