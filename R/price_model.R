@@ -10,6 +10,17 @@
 # the drawn neighbourhood reveals a matching hash with probability q (the participation), so the
 # redundancy follows a binomial distribution. A redundancy of 0 means no claim
 
+# the average block time in seconds, measured from the block times of the reveals read: the first
+# and the last reveal in the window. NA when they span fewer than 1,000 blocks
+measured_block_seconds <- function(chain) {
+  reveals <- chain$reveals[!is.na(chain$reveals$time), ]
+  if (nrow(reveals) < 2) return(NA_real_)
+  first <- which.min(reveals$block); last <- which.max(reveals$block)
+  blocks <- reveals$block[last] - reveals$block[first]
+  if (blocks < 1000) return(NA_real_)
+  as.numeric(difftime(reveals$time[last], reveals$time[first], units = "secs")) / blocks
+}
+
 # rounds per day for a block time in seconds (a round is 152 blocks)
 rounds_per_day <- function(block_seconds) 86400 / (round_length_blocks * block_seconds)
 
