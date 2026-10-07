@@ -79,7 +79,8 @@ expected_max_radius <- function(bits, minimum) {
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
                  "price_balance", "price_balance_note", "price_balance_text",
-                 "light_accepting", "light_slots", "light_max_clients", "light_utilisation", "light_note", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
+                 "light_verdict", "light_accepting", "light_accepting_note", "light_places", "light_places_note", "light_max_clients",
+                 "light_max_note", "light_load", "light_load_note", "light_takes_intro", "light_takes", "light_cold_start", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -106,7 +107,7 @@ for (variant in variants) {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
                         participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
                         clientConnections = 200, lightNodeLimit = 100, acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000,
-                        expectedClients = 4000)
+                        expectedClients = 4000, preferEdge = TRUE)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -647,7 +648,7 @@ testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
                     participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
                         clientConnections = 200, lightNodeLimit = 100, acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000,
-                        expectedClients = 4000)
+                        expectedClients = 4000, preferEdge = TRUE)
   summary <- output$growth_summary
   check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
           grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date", summary, fixed = TRUE), summary)
@@ -700,26 +701,45 @@ for (i in wss_rows) with_wss$nodes$underlays[[i]] <- rbind(with_wss$nodes$underl
   data.frame(address = "/ip4/198.18.0.9/tcp/1635/tls/sni/198-18-0-9.k2k4.libp2p.direct/ws/p2p/16Uiu2"))
 check("light - only full nodes offering a secure WebSocket address count for browsers",
       accepting_full_nodes(prepare_nodes_data(with_wss), "websocket") == 2 && accepting_full_nodes(prepared, "websocket") == 0)
-# by hand: 1,671 nodes x 100 slots = 167,100; at 200 connections that is 835 clients (the example in issue #44)
+# by hand: 1,671 nodes x 100 places = 167,100; at 200 nodes per client that is 835 clients (the example in issue #44)
 cap <- light_capacity(1671, 100, 200, clients = 4000)
-check("light - slots and clients at once", cap$slots == 167100 && cap$per_client == 200 && cap$max_clients == 835)
-check("light - 4,000 clients use 479% of the slots", isTRUE(all.equal(cap$utilisation, 4000 * 200 / 167100)))
-check("light - edge nodes add their own slots", light_capacity(1671, 100, 200, edge_nodes = 10, edge_limit = 1000)$slots == 177100)
+check("light - places and clients at once", cap$places == 167100 && cap$per_client == 200 && cap$max_clients == 835)
+check("light - 4,000 clients need 479% of the places", isTRUE(all.equal(cap$load, 4000 * 200 / 167100)))
+check("light - preferred edge nodes add their own places", light_capacity(1671, 100, 200, edge_nodes = 10, edge_limit = 1000)$places == 177100)
+check("light - edge nodes that are not preferred only add an even share",
+      light_capacity(1671, 100, 200, edge_nodes = 10, edge_limit = 1000, prefer_edge = FALSE)$places == 1681 * 100)
 check("light - a client cannot connect to more nodes than exist", light_capacity(50, 100, 200)$per_client == 50 &&
         light_capacity(50, 100, 200)$max_clients == 100)
-check("light - no nodes means no slots", light_capacity(0, 100, 200, clients = 10)$max_clients == 0 && is.na(light_capacity(0, 100, 200)$utilisation))
+check("light - no nodes means no places", light_capacity(0, 100, 200, clients = 10)$max_clients == 0 && is.na(light_capacity(0, 100, 200)$load))
+# what it would take, by hand for 2,493 nodes x 100 places, 4,000 clients x 200 nodes = 800,000 places needed
+t <- what_it_takes(2493, 100, 200, 1000, 4000)
+check("light - what it takes: fewer connections, a higher limit, more nodes, edge nodes",
+      t$needed == 800000 && t$connections == 62 && t$limit == 321 && t$more_nodes == 5507 &&
+        t$edge_with_network == 551 && t$edge_alone == 800, paste(unlist(t), collapse = " "))
+check("light - edge nodes alone need at least one per connection", what_it_takes(10, 100, 200, 100000, 10)$edge_alone == 200)
+check("light - cold start: 4,000 tabs over 319 built-in nodes, 160 each", isTRUE(all.equal(cold_start_per_node(4000), 4000 * 160 / 319)))
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, clientConnections = 200, lightNodeLimit = 100,
-                    acceptingRule = "websocket", edgeNodes = 0, edgeNodeLimit = 1000, expectedClients = 4000)
-  accepting <- accepting_full_nodes(swarm_cache$data$nodes, "websocket")
+                    acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000, expectedClients = 4000, preferEdge = TRUE)
+  accepting <- accepting_full_nodes(swarm_cache$data$nodes, "reached")
   expected <- light_capacity(accepting, 100, 200, clients = 4000)
-  check("light tab - slots and clients at once", output$light_slots == format_number(expected$slots) &&
+  check("light tab - places and clients at once", output$light_places == format_number(expected$places) &&
           output$light_max_clients == format_number(expected$max_clients))
-  check("light tab - churn is explained when slots run out", grepl("churn", output$light_note) == isTRUE(expected$utilisation > 1), output$light_note)
-  session$setInputs(edgeNodes = 20, edgeNodeLimit = 1000)
-  check("light tab - edge nodes add slots", output$light_slots == format_number(light_capacity(accepting, 100, 200, 20, 1000)$slots))
+  verdict <- output$light_verdict$html
+  check("light tab - the verdict leads with the answer", grepl(if (expected$load > 1) "Not enough room" else if (expected$load > 0.8) "Close to full" else "Enough room",
+                                                                verdict) && grepl(format_number(expected$max_clients), verdict, fixed = TRUE), verdict)
+  check("light tab - demand is coloured by state", grepl(if (expected$load > 1) swarm_colours$unreachable else if (expected$load > 0.8) swarm_colours$error else swarm_colours$mint,
+                                                         output$light_load$html, fixed = TRUE))
+  takes <- output$light_takes
+  check("light tab - the what-it-takes table has a row for each change", lengths(regmatches(takes, gregexpr("<tr", takes))) == 6 &&
+          grepl("at most 6 nodes each|at most [0-9,]+ nodes each", takes) && grepl("Who", takes, fixed = TRUE) && grepl("Our extra nodes carrying all clients alone", takes, fixed = TRUE), substr(takes, 1, 200))
+  session$setInputs(expectedClients = 10)
+  check("light tab - few clients fit", grepl("Enough room", output$light_verdict$html))
+  session$setInputs(expectedClients = 4000, edgeNodes = 20, edgeNodeLimit = 1000, preferEdge = FALSE)
+  check("light tab - extra nodes the client does not prefer add an even share", output$light_places == format_number((accepting + 20) * 100) &&
+          grepl("even share", output$light_places_note))
   session$setInputs(clientConnections = 0)
-  check("light tab - 0 connections shows a message", grepl("Enter 1 or more connections", output_or_error(output$light_slots)))
+  check("light tab - 0 connections shows a message", grepl("Enter 1 or more nodes", output_or_error(output$light_places)))
 })
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
