@@ -167,8 +167,8 @@ prepare_nodes_data <- function(swarmscan_data) {
   # browser on an HTTPS page can open; a plain TCP address; and anything else
   address_kind <- function(u, kind) {
     if (is.null(u) || NROW(u) == 0) return(FALSE)
-    secure_ws <- grepl("/tls/", u$address, fixed = TRUE) & grepl("/ws", u$address, fixed = TRUE)
-    plain_tcp <- grepl("/tcp/", u$address, fixed = TRUE) & !grepl("/ws", u$address, fixed = TRUE)
+    secure_ws <- grepl("/tls/(sni/[^/]+/)?ws(/|$)", u$address)
+    plain_tcp <- grepl("^/(ip4|ip6|dns|dns4|dns6)/[^/]+/tcp/[0-9]+(/p2p/[^/]+)?$", u$address)
     any(switch(kind, secure_ws = secure_ws, plain_tcp = plain_tcp, other = !secure_ws & !plain_tcp))
   }
   nodes_data$secure_websocket <- vapply(underlays, address_kind, logical(1), kind = "secure_ws")
@@ -532,12 +532,12 @@ ui <-
     ###
     nav_panel("Connectivity",
               div(class = "section-label", "Browser light client capacity"),
-              p("How many browser light clients the network can serve concurrently. Browsers can only dial full nodes that advertise a WSS underlay, ",
+              p("How many browser light clients the network can serve concurrently. Pages served over HTTPS can only dial full nodes that advertise a WSS underlay, ",
                 "and each full node accepts up to --light-node-limit light peers (default 100)."),
               layout_column_wrap(
                 width = 1/2, fill = FALSE,
                 value_box(title = "WSS full nodes", value = textOutput("light_capable"), textOutput("light_capable_note", container = p)),
-                value_box(title = "Light peer capacity", value = textOutput("light_places"), textOutput("light_places_note", container = p))
+                value_box(title = "WSS full nodes × light-node-limit", value = textOutput("light_places"), textOutput("light_places_note", container = p))
               ),
               div(class = "section-label", "Client"),
               p("How many peers a client keeps, and whether it dials a fixed bootnode list first, depends on the client implementation. ",
@@ -1249,21 +1249,23 @@ server <- function(input, output, session) {
     nodes <- swarm_data()$nodes
     full <- nodes$fullNode %in% TRUE
     list(capable = browser_capable_nodes(nodes), full = sum(full), plain_tcp = sum(full & nodes$plain_tcp %in% TRUE),
+         both = sum(full & nodes$plain_tcp %in% TRUE & nodes$secure_websocket %in% TRUE),
          other_address = sum(full & nodes$other_address %in% TRUE))
   })
   output$light_capable <- renderText(format_number(light_network()$capable))
   output$light_capable_note <- renderText("Full nodes with a /tls/.../ws underlay")
   output$light_places <- renderText(format_number(light_network()$capable * max(input$otherLimit, 0, na.rm = TRUE)))
-  output$light_places_note <- renderText(sprintf("%s × light-node-limit %s", format_number(light_network()$capable),
+  output$light_places_note <- renderText(sprintf("%s × %s light peers", format_number(light_network()$capable),
                                                  format_number(max(input$otherLimit, 0, na.rm = TRUE))))
   output$light_transport_note <- renderText({
     n <- light_network()
-    sprintf("Browsers cannot dial plain TCP, and pages served over HTTPS can only open wss connections. In swarmscan's current data, %s of %s full nodes advertise TCP underlays, %s of them also a WSS underlay, and %s any other kind. Whether the WSS underlays actually accept browser connections is not tested.",
-            format_number(n$plain_tcp), format_number(n$full), format_number(n$capable), format_number(n$other_address))
+    sprintf("Browsers cannot dial plain TCP, and pages served over HTTPS can only open wss connections. In swarmscan's current data, of %s full nodes, %s advertise a plain TCP underlay, %s a WSS underlay (%s both), and %s another kind. Whether the WSS underlays actually accept browser connections is not tested.",
+            format_number(n$full), format_number(n$plain_tcp), format_number(n$capable), format_number(n$both), format_number(n$other_address))
   })
 
-  # starting a start-up list's places at the places per node, until the reader changes them
+  # the bootnodes' light-node-limit follows the light-node-limit until the reader changes it
   observeEvent(input$otherLimit, {
+    if (!isTRUE(input$otherLimit >= 1)) return()
     if (isTRUE(input$listLimit == light_last_limit())) updateNumericInput(session, "listLimit", value = input$otherLimit)
     light_last_limit(input$otherLimit)
   }, ignoreInit = TRUE)
@@ -1276,7 +1278,8 @@ server <- function(input, output, session) {
     warnings <- c(
       if (isTRUE(input$listNodes > n$capable)) sprintf("More bootnodes than WSS full nodes; counted as %s.", format_number(n$capable)),
       if (isTRUE(input$listNodes > 0) && isTRUE(input$startDials == 0)) "Bootnodes set but 0 bootnode peers per client: ignored.",
-      if (isTRUE(input$startDials > input$clientConnections)) "Bootnode peers per client exceed peers per client: capped.")
+      if (isTRUE(input$startDials > input$clientConnections)) "Bootnode peers per client exceed peers per client: capped.",
+      if (isTRUE(input$listNodes > 0) && isTRUE(input$startDials > input$listNodes)) "Bootnode peers per client exceed the bootnodes: capped at one per bootnode.")
     paste(warnings, collapse = " ")
   })
   light_model <- reactive({
@@ -1304,7 +1307,7 @@ server <- function(input, output, session) {
     bound <- if (!m$list_used) "" else if (m$bound_by == "list") ", bootnodes saturate first" else ", non-bootnode peers saturate first"
     text <- switch(light_state(m$load),
       over = if (m$most == 0) "Over capacity: there are no WSS full nodes to connect to." else
-        sprintf("Over capacity: %s concurrent clients, but the light-node limits allow at most %s (%s× over)%s. A saturated node evicts a random light peer for each new one, so clients would keep losing peers.",
+        sprintf("Over capacity: %s concurrent clients, but the light-node limits allow at most %s (%s× over)%s. Over the limit, bee disconnects a random light peer for each new one.",
                 format_number(clients), format_number(m$most), format_number(round(m$load, 1)), bound),
       close = sprintf("Near capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound),
       fits = sprintf("Within capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound))
@@ -1315,7 +1318,7 @@ server <- function(input, output, session) {
   output$light_most_note <- renderText({
     if (!light_inputs_set()) return("")
     m <- light_model()
-    if (!m$list_used) return(sprintf("Light peer capacity %s ÷ %s peers per client; an upper bound", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere)))
+    if (!m$list_used) return(sprintf("%s light peers ÷ %s peers per client; an upper bound", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere)))
     if (m$bound_by == "list") sprintf("Limited by the bootnodes: %s light peer connections ÷ %s bootnode peers per client", format_number(m$list_nodes * input$listLimit), format_number(m$on_list)) else
       sprintf("Limited by the other WSS full nodes: %s light peer connections ÷ %s peers per client", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere))
   })
@@ -1342,16 +1345,16 @@ server <- function(input, output, session) {
     shiny::req(light_inputs_set())
     m <- light_model()
     t <- what_it_takes(m$capable, input$otherLimit, input$clientConnections, input$expectedClients, m$list_nodes, input$listLimit, m$start)
-    labels <- c(connections = "Peers per client", limit = if (m$list_used) "light-node-limit (non-bootnodes)" else "light-node-limit",
+    labels <- c(peers = "Peers per client", limit = if (m$list_used) "light-node-limit (non-bootnodes)" else "light-node-limit",
                 nodes = if (m$list_used) "WSS full nodes (non-bootnodes)" else "WSS full nodes",
-                start = "Bootnode peers per client", list_limit = "light-node-limit on bootnodes",
-                list_nodes = "Bootnodes", other = "Other WSS full nodes", list = "Bootnodes")
-    current <- c(connections = input$clientConnections, limit = input$otherLimit, nodes = if (m$list_used) m$other_nodes else m$capable,
-                 start = m$on_list, list_limit = input$listLimit, list_nodes = m$list_nodes)
+                bootnode_peers = "Bootnode peers per client", bootnode_limit = "light-node-limit on bootnodes",
+                bootnodes = "Bootnodes", other = "Other WSS full nodes", list = "Bootnodes", network = "All WSS full nodes")
+    current <- c(peers = input$clientConnections, limit = input$otherLimit, nodes = if (m$list_used) m$other_nodes else m$capable,
+                 bootnode_peers = m$on_list, bootnode_limit = input$listLimit, bootnodes = m$list_nodes)
     needed <- vapply(seq_len(nrow(t)), function(i) {
       key <- t$change[i]
       if (t$status[i] == "already enough") return(sprintf("none needed (they allow %s clients)", format_number(t$value[i])))
-      if (key == "list_nodes" && t$status[i] == "not possible")
+      if (key == "bootnodes" && t$status[i] == "not possible")
         return(sprintf("%s (only %s WSS full nodes)", format_number(t$value[i]), format_number(m$capable)))
       if (is.na(t$value[i]) || t$status[i] == "not possible") return("–")
       sprintf("%s → %s", format_number(current[[key]]), format_number(t$value[i]))
@@ -1366,7 +1369,7 @@ server <- function(input, output, session) {
     m <- light_model()
     if (!m$list_used) return("")
     sprintf("If all %2$s clients start at the same time, each bootnode gets about %1$s dial attempts, against a light-node-limit of %3$s.",
-            format_number(round(start_attempts_per_node(input$expectedClients, m$list_nodes, m$start))), format_number(input$expectedClients),
+            format_number(round(start_attempts_per_node(input$expectedClients, m$list_nodes, m$on_list))), format_number(input$expectedClients),
             format_number(input$listLimit))
   })
 
