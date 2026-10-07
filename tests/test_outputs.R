@@ -936,5 +936,26 @@ testServer(server, {
   check("bootnode tab - a pasted list", grepl("2 bootnodes (peer IDs) on 2 IP addresses", output$bootnode_list_note, fixed = TRUE))
 })
 
+### the sidebar shows each setting only on the tabs it applies to (#69)
+# tabs that hide the radius keep working with an invalid one typed on another tab
+testServer(server, {
+  session$setInputs(storageRadius = 20, minNodesPerNbhood = 2, onlyFullNodes = TRUE, activeDays = chain_window_days)
+  check("sidebar - Map, Data and Reachability ignore an invalid hidden radius",
+        !inherits(output_or_error(output$map_note), "output_error") && is.numeric(max_capacity_radius()) &&
+          nrow(filtered_nodes_reactive()) > 0)
+  check("sidebar - tabs that show the radius still ask for a valid one", grepl("Enter a storage radius", output_or_error(output$distPlot)))
+})
+ui_html <- htmltools::HTML(as.character(ui))
+tab_names <- sub('data-value="([^"]+)"', "\\1", unique(regmatches(ui_html, gregexpr('data-value="[^"]+"', ui_html))[[1]]))
+check("sidebar - every setting names real tabs", all(unlist(setting_tabs) %in% tab_names),
+      paste(setdiff(unlist(setting_tabs), tab_names), collapse = ", "))
+check("sidebar - only Connectivity has no setting", setequal(setdiff(tab_names, unique(unlist(setting_tabs))), "Connectivity"),
+      paste(setdiff(tab_names, unique(unlist(setting_tabs))), collapse = ", "))
+conditions <- gsub("&#39;", "'", regmatches(ui_html, gregexpr('data-display-if="[^"]+"', ui_html))[[1]], fixed = TRUE)
+for (setting in names(setting_tabs)) {
+  shown_on <- sprintf("[%s].includes(input.tab)", paste0("'", setting_tabs[[setting]], "'", collapse = ", "))
+  check(sprintf("sidebar - %s is shown only on its tabs", setting), sprintf('data-display-if="%s"', shown_on) %in% conditions)
+}
+
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)
