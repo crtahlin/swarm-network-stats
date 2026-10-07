@@ -74,7 +74,10 @@ expected_max_radius <- function(bits, minimum) {
   radius
 }
 
-all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text", "storage_taken", "max_radius", "max_capacity",
+all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
+                 "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
+                 "price_balance", "price_balance_note", "price_balance_text",
+                 "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
 
@@ -97,7 +100,8 @@ for (variant in variants) {
 
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
-      session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full)
+      session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
+                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -384,6 +388,43 @@ for (radius in c(4, 9)) {
   }
 }
 
+# last drawn: for each nbhood, the latest anchor whose first bits name it, against the raw fixture
+raw_redis <- chain_fixture$logs[[tolower(chain_contracts$redistribution$address)]]
+raw_anchor <- Filter(function(l) l$topics[[1]] == chain_topics$anchor && hex_to_number(l$blockNumber) >= chain$window_start, raw_redis)
+anchor_round <- vapply(raw_anchor, function(l) hex_to_number(substr(l$data, 3, 66)), 0)
+anchor_bits <- overlay_to_bits(vapply(raw_anchor, function(l) substr(l$data, 67, 130), ""))
+check("chain - every anchor in the window is read", nrow(chain$anchors) == length(raw_anchor) && setequal(chain$anchors$round, anchor_round))
+drawn <- last_drawn(chain$anchors, chain$truths, nbhood_names(4))
+expected_round <- vapply(nbhood_names(4), function(nb) { r <- anchor_round[substr(anchor_bits, 1, 4) == nb]; if (length(r)) max(r) else NA }, 0)
+check("map - last drawn is each nbhood's latest anchor", identical(unname(drawn$round), unname(expected_round)))
+check("map - last drawn is claimed when its round has a truth", identical(drawn$claimed, drawn$round %in% chain$truths$round))
+# pot payouts: the fixture's PotWithdrawn amounts in the last 6 hours, per day
+raw_pot <- chain_fixture$logs[[tolower(chain_contracts$postage_stamp$address)]]
+pot_time <- vapply(raw_pot, function(l) hex_to_number(l$blockTimestamp), 0)
+pot_amount <- vapply(raw_pot, function(l) hex_to_number(substr(l$data, 67, 130)), 0) / 1e16
+recent <- pot_time >= as.numeric(chain$head_time) - 0.25 * 86400
+check("map - pot paid per day", isTRUE(all.equal(pot_per_day(chain, 0.25), sum(pot_amount[recent]) / 0.25)) && sum(recent) > 0)
+# one nbhood's history: rounds whose anchor names it, and pots paid in those rounds, from the raw fixture
+pot_block <- vapply(raw_pot, function(l) hex_to_number(l$blockNumber), 0)
+anchor_time <- vapply(raw_anchor, function(l) hex_to_number(l$blockTimestamp), 0)
+for (nb in unique(substr(anchor_bits, 1, 4))[1:3]) {
+  history <- nbhood_history(chain, nb, 0.25)
+  mine <- anchor_round[substr(anchor_bits, 1, 4) == nb & anchor_time >= as.numeric(chain$head_time) - 0.25 * 86400]
+  check(sprintf("map - nbhood %s history: rounds drawn and pots paid", nb), history$rounds == length(mine) &&
+          isTRUE(all.equal(history$paid, sum(pot_amount[recent & (pot_block %/% 152) %in% mine]))) && history$paid > 0)
+}
+# the histories of all nbhoods add up to the network's payouts in rounds with an anchor
+all_paid <- sum(vapply(nbhood_names(4), function(nb) nbhood_history(chain, nb, 0.25)$paid, 0))
+check("map - nbhood payouts add up to the network's", isTRUE(all.equal(all_paid, sum(pot_amount[recent & (pot_block %/% 152) %in% anchor_round]))))
+
+# expected earnings by hand: 1,000 xBZZ a day over 512 nbhoods, 10 xBZZ against 90 is a tenth of the wins
+earn <- expected_earnings(1000, 9, 10, 90)
+check("map - expected earnings", isTRUE(all.equal(earn$win_share, 0.1)) && isTRUE(all.equal(earn$per_30_days, 1000 * 30 / 512 * 0.1)))
+members4 <- nbhood_members(chain$stakes, latest, dump, 4)
+some <- members4$nbhood[members4$kind == node_kinds[["active"]]][1]
+active_here <- members4[members4$nbhood == some & members4$kind == node_kinds[["active"]], ]
+check("map - stake weight halves per reserve doubling", isTRUE(all.equal(nbhood_stake_weight(members4, some), sum(active_here$effective_stake / 2^active_here$height))))
+
 # hover and click: the tile under the pointer, its summary, and its nodes
 testServer(server, {
   session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE)
@@ -396,6 +437,22 @@ testServer(server, {
   check("map - hover outside the tiles asks to point at one", grepl("Point at a neighbourhood", output$nbhood_hover_text))
   session$setInputs(nbhoodClick = list(x = busiest$x, y = -busiest$y))
   check("map - click selects the tile", output$nbhood_selected_text == paste("Nodes in neighbourhood", busiest$nbhood))
+  session$setInputs(earningsStake = 10)
+  details <- output$nbhood_selected_details
+  drawn_here <- last_drawn(chain_cache$data$anchors, chain_cache$data$truths, busiest$nbhood)
+  expected_earn <- expected_earnings(pot_per_day(chain_cache$data, 0.25), 4, 10, nbhood_stake_weight(members, busiest$nbhood))
+  check("map - details give the last draw", if (is.na(drawn_here$round)) grepl("Not drawn", details) else grepl(format_number(drawn_here$round), details, fixed = TRUE), details)
+  history_here <- nbhood_history(chain_cache$data, busiest$nbhood, 0.25)
+  check("map - details give this nbhood's own payouts", grepl(sprintf("drawn in %s rounds, and their winners were paid %s xBZZ",
+          format_number(history_here$rounds), format_number(round(history_here$paid, 1))), details, fixed = TRUE), details)
+  explainer <- output$nbhood_earnings_explainer
+  check("map - the explanation is a separate paragraph and says the payouts are network-wide",
+        grepl("whole network's payouts", explainer, fixed = TRUE) && !grepl("whole network", details, fixed = TRUE))
+  check("map - details give the expected earnings", grepl(sprintf("about %s xBZZ per 30 days", format_number(round(expected_earn$per_30_days, 2))), details, fixed = TRUE), details)
+  check("map - the explanation gives the win share", grepl(sprintf("win %.1f%% of the time", 100 * expected_earn$win_share), explainer, fixed = TRUE), explainer)
+  session$setInputs(earningsStake = 0)
+  check("map - a stake of 0 shows a message", grepl("Enter a stake above 0", output_or_error(output$nbhood_selected_details)))
+  session$setInputs(earningsStake = 10)
   output$nbhood_nodes
   listed <- captured("nbhood_nodes")
   check("map - the table lists the staked nodes of that nbhood",
@@ -408,6 +465,107 @@ testServer(server, {
   session$setInputs(activeDays = 0)
   check("map - an active period of 0 shows a message", grepl("Enter an active period", output_or_error(output$nbhood_hover_text)))
 })
+
+### Price projection (R/price_model.R)
+oracle <- chain$oracle
+check("price - oracle parameters read from the contract",
+      identical(oracle$change_rate, c(1049417, 1049206, 1048996, 1048786, 1048576, 1048366, 1048156, 1047946, 1047736)) &&
+        oracle$price_base == 2^20 && oracle$minimum_price == 24000 && identical(oracle$paused, FALSE))
+check("price - rounds per day", isTRUE(all.equal(rounds_per_day(5), 86400 / 760)) && isTRUE(all.equal(rounds_per_day(2), 86400 / 304)))
+# per round: a full redundancy r multiplies the price by changeRate[r] / priceBase; nobody revealing is the largest rise
+check("price - one round with every node revealing",
+      isTRUE(all.equal(expected_round_log_change(c(0, 3, 4, 8, 12), 1, oracle),
+                       log(c(1049417, 1048786, 1048576, 1047736, 1047736) / 2^20))))
+check("price - one round with nobody revealing", isTRUE(all.equal(expected_round_log_change(5, 0, oracle), log(1049417 / 2^20))))
+# hand calculation: 2 nodes at q = 0.5 give redundancy 0, 1 or 2 with probabilities 1/4, 1/2, 1/4
+check("price - binomial redundancy", isTRUE(all.equal(expected_round_log_change(2, 0.5, oracle),
+                                                    sum(c(0.25, 0.5, 0.25) * log(c(1049417, 1049206, 1048996) / 2^20)))))
+# the daily figures in issue #43: 4 everywhere is no change, 3 about +2.3%, 0 about +9.5%, 8 about -8.7%
+daily <- function(n) drift_percent(model_drift(rep(n, 512), 1, oracle, 5))
+check("price - 4 nodes everywhere: no change", abs(daily(4)) < 1e-12)
+check("price - 3 nodes everywhere: about +2.3% a day", abs(daily(3) - 2.3) < 0.05, sprintf("%.3f", daily(3)))
+check("price - no nodes: about +9.5% a day", abs(daily(0) - 9.5) < 0.1, sprintf("%.3f", daily(0)))
+check("price - 8 nodes everywhere: about -8.7% a day", abs(daily(8) + 8.7) < 0.1, sprintf("%.3f", daily(8)))
+check("price - 2-second blocks give 2.5 times the daily change", isTRUE(all.equal(model_drift(rep(3, 8), 1, oracle, 2), 2.5 * model_drift(rep(3, 8), 1, oracle, 5))))
+# fitting the participation finds the q that produced a drift
+counts <- c(rep(2, 50), rep(3, 200), rep(4, 200), rep(6, 62))
+check("price - fitted participation recovers the q behind a drift",
+      abs(fit_participation(counts, model_drift(counts, 0.7, oracle, 5), oracle, 5) - 0.7) < 1e-4)
+check("price - no participation fits a drift outside the model's range", is.na(fit_participation(counts, 1, oracle, 5)))
+falling <- project_price(30000, as.POSIXct("2026-10-07", tz = "UTC"), log(0.9), 30, 24000)
+check("price - the projection never goes below the minimum price",
+      min(falling$price) == 24000 && falling$price[1] == 30000 && nrow(falling) == 31)
+check("price - 1 GiB for 30 days", isTRUE(all.equal(gib_month_bzz(100000, 5), 100000 * 262144 * 518400 / 1e16)))
+# observed change and round statistics against the raw fixture
+# over the 6 hours: from the price in force 6 hours ago (the last update before then) to now
+raw_price <- chain$prices[order(chain$prices$time), ]
+in_force <- tail(raw_price$price[raw_price$time <= chain$head_time - 0.25 * 86400], 1)
+check("price - observed change from the price in force at the start", length(in_force) == 1 &&
+        isTRUE(all.equal(observed_drift(chain$prices, chain$price, chain$head_time, 0.25), log(chain$price / in_force) / 0.25)))
+# over a longer period than the history: from the first update, over the time since then
+since_first <- as.numeric(difftime(chain$head_time, raw_price$time[1], units = "days"))
+check("price - observed change from the first update when the history is shorter",
+      isTRUE(all.equal(observed_drift(chain$prices, chain$price, chain$head_time, 2), log(chain$price / raw_price$price[1]) / since_first)))
+check("price - no history gives no observed change", is.na(observed_drift(chain$prices[0, ], chain$price, chain$head_time, 1)))
+stats <- round_stats(chain, 0.25)
+truth_rounds_window <- unique(truth_rounds)
+complete <- truth_rounds_window[truth_rounds_window <= chain$to_block %/% 152 - 1 & truth_rounds_window >= ceiling(chain$window_start / 152)]
+check("price - claimed rounds are the complete rounds with a truth", stats$claimed == length(complete))
+check("price - matching reveals per claimed round",
+      isTRUE(all.equal(stats$mean_matching, sum(chain$reveals$round %in% complete & chain$reveals$matched_truth %in% TRUE) / length(complete))))
+
+# nodes to hold the price flat: hand-countable cases
+plan <- balance_plan(rep(4, 10), 1, oracle)
+check("balance - 4 nodes everywhere needs nothing", plan$add == 0 && plan$leave == 0 && plan$moves == 0)
+check("balance - 3 nodes everywhere needs one more in each", balance_plan(rep(3, 10), 1, oracle)$add == 10)
+check("balance - 5 nodes everywhere lets one leave from each", balance_plan(rep(5, 10), 1, oracle)$leave == 10)
+check("balance - no participation is out of reach", is.na(balance_plan(rep(3, 4), 0, oracle)$add))
+check("balance - an even spread moves the nodes above the average", balance_plan(c(5, 1, 3, 3), 1, oracle)$moves == 2)
+# the step per matching reveal is almost constant, so the count is close to 4 / q per neighbourhood minus today's nodes
+counts <- c(rep(1, 40), rep(2, 60), rep(3, 250), rep(4, 200), rep(6, 62))
+for (q in c(1, 0.87, 0.6)) {
+  plan <- balance_plan(counts, q, oracle)
+  check(sprintf("balance - nodes to add at q = %.2f is about 4 / q per neighbourhood less today's", q),
+        abs(plan$add - (4 / q * length(counts) - sum(counts))) <= 3, paste(plan$add, 4 / q * length(counts) - sum(counts)))
+  check(sprintf("balance - at q = %.2f the even spread changes the price by under 0.05%% a day", q),
+        abs(drift_percent(rounds_per_day(5) * plan$even) - drift_percent(rounds_per_day(5) * plan$now)) < 0.05)
+}
+
+# the button's slider update is recorded instead of sent to a browser
+slider_updates <- list()
+updateSliderInput <- function(session, inputId, ...) slider_updates[[length(slider_updates) + 1]] <<- list(id = inputId, value = list(...)$value)
+testServer(server, {
+  session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
+                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+  n <- nbhood_tiles(nbhood_members(chain_cache$data$stakes, last_reveals(chain_cache$data, 0.25), swarm_cache$data$nodes, 4), 4, FALSE)$active
+  observed <- observed_drift(chain_cache$data$prices, chain_cache$data$price, chain_cache$data$head_time, 0.25)
+  fitted <- fit_participation(n, observed, oracle, 5)
+  output$price_calibration
+  check("price tab - the participation starts at the fitted value",
+        length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
+        paste("fitted", fitted, "updates", length(slider_updates)))
+  slider_updates <<- list()
+  check("price tab - model change matches the model", output$price_model_change == sprintf("%+.2f%%", drift_percent(model_drift(n, 1, oracle, 5))))
+  full_change <- output$price_model_change
+  session$setInputs(participation = 50)
+  check("price tab - lower participation raises the change", as.numeric(sub("%", "", output$price_model_change)) > as.numeric(sub("%", "", full_change)))
+  session$setInputs(participation = 100, extraNodes = 3)
+  check("price tab - extra nodes lower the change", as.numeric(sub("%", "", output$price_model_change)) <= as.numeric(sub("%", "", full_change)))
+  check("price tab - the plot renders with the comparison line", !inherits(output_or_error(output$pricePlot), "output_error"))
+  plan <- balance_plan(n, 1, oracle)
+  check("price tab - nodes to hold the price flat", output$price_balance ==
+          (if (plan$add > 0) paste0("+", format_number(plan$add)) else if (plan$leave > 0) paste0("-", format_number(plan$leave)) else "0"),
+        output$price_balance)
+  # the fit uses the real counts, so extra nodes do not change it
+  session$setInputs(useFittedParticipation = 1)
+  check("price tab - the button sets the fitted participation, ignoring extra nodes",
+        length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
+        paste("fitted", fitted))
+  check("price tab - the calibration counts exclude extra nodes", grepl(sprintf("against %.2f active staked", mean(n)), output$price_calibration))
+  session$setInputs(horizonDays = 0)
+  check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
+})
+rm(updateSliderInput)
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)

@@ -235,6 +235,8 @@ data_status_text <- function() {
 source("R/chain.R", local = TRUE)
 # the Nbhood map
 source("R/nbhood_map.R", local = TRUE)
+# the Price projection
+source("R/price_model.R", local = TRUE)
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -404,13 +406,54 @@ ui <-
                 "several neighbourhoods and counts in each. Point at a tile for its counts; click it to list its nodes."),
               p("Light and ultra-light nodes are not shown: swarmscan does not list them, and their place in the ",
                 "network cannot be worked out from chain data."),
-              checkboxInput("showUnstaked", "Show non-staking nodes (full nodes without stake, from swarmscan)", value = FALSE, width = "100%"),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                checkboxInput("showUnstaked", "Show non-staking nodes (full nodes without stake, from swarmscan)", value = FALSE, width = "100%"),
+                numericInput("earningsStake", "Stake for the earnings estimate (xBZZ)", value = 10, min = 0.1, step = 1, width = "100%")
+              ),
               textOutput("nbhood_hover_text"),
               plotOutput("nbhoodMap", height = "640px", hover = hoverOpts("nbhoodHover", delay = 100, delayType = "throttle"),
                          click = "nbhoodClick"),
               br(),
               textOutput("nbhood_selected_text"),
+              textOutput("nbhood_selected_details", container = p),
+              textOutput("nbhood_earnings_explainer", container = p),
               DT::dataTableOutput("nbhood_nodes")),
+
+    ###
+    nav_panel("Price projection",
+              div(class = "section-label", "Storage price projection"),
+              p("A model, not a forecast. Each round the price oracle draws one neighbourhood; its staked nodes reveal, ",
+                "and the number of matching reveals sets the change: fewer than 4 raise the price, more than 4 lower it, ",
+                "and a round nobody claims counts as the largest rise. The model takes the staked nodes that revealed ",
+                "within the days set in the sidebar, in every neighbourhood at the sidebar's radius, and assumes each of ",
+                "them reveals a matching hash with the participation set below. It then extends today's price at the ",
+                "expected change per day."),
+              layout_column_wrap(
+                width = 1/4, fill = FALSE,
+                sliderInput("participation", "Participation (%)", min = 0, max = 100, value = 100, step = 1),
+                numericInput("horizonDays", "Horizon (days)", value = 90, min = 1, max = 730, step = 1),
+                radioButtons("blockSeconds", "Gnosis block time",
+                             choices = c("5 seconds (now)" = 5, "2 seconds (planned, GIP-153)" = 2), selected = 5),
+                numericInput("extraNodes", "Extra staked nodes in each neighbourhood with fewer than 4",
+                             value = 0, min = 0, max = 10, step = 1)
+              ),
+              layout_column_wrap(
+                width = 1/3, fill = FALSE,
+                value_box(title = "Price now", value = textOutput("price_now"), p("PLUR per chunk per block, from the price oracle")),
+                value_box(title = "Model change", value = textOutput("price_model_change"), p("Per day, with the settings above")),
+                value_box(title = "Observed change", value = textOutput("price_observed_change"), p("Per day, over the days set in the sidebar")),
+                value_box(title = "Price at horizon", value = textOutput("price_at_horizon"), p("PLUR per chunk per block (projection)")),
+                value_box(title = "1 GiB for 30 days", value = textOutput("price_gib_month"), p("BZZ, now and at the horizon; bare rent, without unused batch space")),
+                value_box(title = "To hold the price flat", value = textOutput("price_balance"), textOutput("price_balance_note", container = p))
+              ),
+              textOutput("price_balance_text"),
+              br(),
+              textOutput("price_calibration"),
+              actionButton("useFittedParticipation", "Set participation to the value that reproduces the observed change",
+                           class = "btn-sm btn-outline-primary"),
+              br(), br(),
+              plotOutput("pricePlot", height = "520px")),
 
     # ###
     # nav_panel("Nbhood counts",
@@ -701,6 +744,49 @@ server <- function(input, output, session) {
     if (is.null(selected_nbhood())) "Click a neighbourhood to list its nodes." else paste("Nodes in neighbourhood", selected_nbhood())
   })
 
+  # for the clicked neighbourhood: when it was last drawn, what it got, and what a new node staking
+  # the set amount could expect to earn there
+  nbhood_details <- reactive({
+    shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
+    shiny::validate(shiny::need(isTRUE(input$earningsStake > 0), "Enter a stake above 0 for the earnings estimate."))
+    chain <- chain_data_polled()
+    paid <- pot_per_day(chain, input$activeDays)
+    others <- nbhood_stake_weight(nbhood_members_reactive(), selected_nbhood())
+    list(chain = chain, paid = paid, others = others,
+         drawn = last_drawn(chain$anchors, chain$truths, selected_nbhood()),
+         history = nbhood_history(chain, selected_nbhood(), input$activeDays),
+         earn = expected_earnings(paid, input$storageRadius, input$earningsStake, others))
+  })
+
+  # first paragraph: the facts and the estimate
+  output$nbhood_selected_details <- renderText({
+    d <- nbhood_details()
+    drawn_text <- if (is.na(d$drawn$round)) {
+      sprintf("Not drawn in the last %s days (rounds in which nobody revealed leave no record).", format_number(chain_window_days))
+    } else {
+      sprintf("Last drawn in round %s, %s UTC (%s).", format_number(d$drawn$round), format(d$drawn$time, "%Y-%m-%d %H:%M", tz = "UTC"),
+              if (d$drawn$claimed) "claimed" else "not claimed")
+    }
+    paste(drawn_text,
+      sprintf("Over the last %s days it was drawn in %s rounds, and their winners were paid %s xBZZ in total (the average per neighbourhood is %s xBZZ).",
+              format_number(input$activeDays), format_number(d$history$rounds), format_number(round(d$history$paid, 1)),
+              format_number(round(d$paid * input$activeDays / 2^input$storageRadius, 1))),
+      sprintf("A new node staking %s xBZZ here could expect about %s xBZZ per 30 days (%s%% of its stake a year).",
+              format_number(input$earningsStake), format_number(round(d$earn$per_30_days, 2)),
+              format_number(round(100 * d$earn$per_30_days * 365 / 30 / input$earningsStake))))
+  })
+
+  # second paragraph: how the estimate is made
+  output$nbhood_earnings_explainer <- renderText({
+    d <- nbhood_details()
+    sprintf(paste(
+      "How the estimate is made: it uses the whole network's payouts, %s xBZZ a day over the last %s days, shared over %s neighbourhoods at radius %d, each drawn equally often in the long run.",
+      "When this neighbourhood is drawn, the node would win %.1f%% of the time, against %s xBZZ of stake (weighted for reserve doubling) from the active staked nodes already here.",
+      "It assumes all of them reveal a matching hash, and that payouts stay as they were."),
+      format_number(round(d$paid)), format_number(input$activeDays), format_number(2^input$storageRadius), input$storageRadius,
+      100 * d$earn$win_share, format_number(round(d$others, 1)))
+  })
+
   output$nbhood_nodes <- DT::renderDataTable({
     shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
     members <- nbhood_members_reactive()
@@ -716,6 +802,140 @@ server <- function(input, output, session) {
   container = header_with_tooltips(nbhood_nodes_columns),
   rownames = FALSE
   )
+
+  ###############
+  # PRICE PROJECTION
+  ###############
+  # active staked nodes per neighbourhood at the set radius, as on the Nbhood map
+  price_active_counts <- reactive(nbhood_tiles(nbhood_members_reactive(), input$storageRadius, FALSE)$active)
+  # the same with the what-if extra nodes in each neighbourhood with fewer than 4
+  price_nbhood_counts <- reactive({
+    shiny::validate(shiny::need(isTRUE(input$extraNodes >= 0), "Enter 0 or more extra nodes."))
+    n <- price_active_counts()
+    ifelse(n < 4, n + input$extraNodes, n)
+  })
+  # the change observed on chain over the sidebar's days, per day; it is measured in real time, so
+  # it does not depend on the block time setting
+  price_observed <- reactive({
+    chain <- chain_data_polled()
+    observed_drift(chain$prices, chain$price, chain$head_time, input$activeDays)
+  })
+  # the participation that reproduces the observed change with the real counts (no extra nodes),
+  # at today's 5-second blocks; NA if none does
+  fitted_participation <- reactive({
+    fit_participation(price_active_counts(), price_observed(), chain_data_polled()$oracle, 5)
+  })
+  # the participation starts at the fitted value: set once when the data first allows a fit,
+  # unless the slider was already moved from 100%
+  observeEvent(fitted_participation(), {
+    fitted <- fitted_participation()
+    if (!is.na(fitted) && isTRUE(input$participation == 100)) updateSliderInput(session, "participation", value = round(100 * fitted))
+  }, once = TRUE)
+  observeEvent(input$useFittedParticipation, {
+    fitted <- fitted_participation()
+    if (!is.na(fitted)) updateSliderInput(session, "participation", value = round(100 * fitted))
+  })
+
+  price_settings <- reactive({
+    shiny::validate(shiny::need(isTRUE(input$horizonDays > 0), "Enter a horizon of 1 day or more."))
+    shiny::validate(shiny::need(isTRUE(input$participation >= 0 && input$participation <= 100), "Set a participation from 0 to 100%."))
+    list(q = input$participation / 100, block_seconds = as.numeric(input$blockSeconds), days = input$horizonDays)
+  })
+  price_model <- reactive({
+    chain <- chain_data_polled()
+    settings <- price_settings()
+    drift <- model_drift(price_nbhood_counts(), settings$q, chain$oracle, settings$block_seconds)
+    list(chain = chain, drift = drift, observed = price_observed(), settings = settings,
+         projection = project_price(chain$price, chain$head_time, drift, settings$days, chain$oracle$minimum_price))
+  })
+
+  output$price_now <- renderText(format_number(price_model()$chain$price))
+  output$price_model_change <- renderText(sprintf("%+.2f%%", drift_percent(price_model()$drift)))
+  output$price_observed_change <- renderText({
+    observed <- price_model()$observed
+    if (is.na(observed)) "no data" else sprintf("%+.2f%%", drift_percent(observed))
+  })
+  output$price_at_horizon <- renderText(format_number(round(tail(price_model()$projection$price, 1))))
+  output$price_gib_month <- renderText({
+    model <- price_model()
+    paste(format_number(gib_month_bzz(model$chain$price, model$settings$block_seconds)), "->",
+          format_number(gib_month_bzz(tail(model$projection$price, 1), model$settings$block_seconds)))
+  })
+
+  # how many active staked nodes would hold the price flat, with today's nodes (no extra nodes) at
+  # the participation set
+  price_balance_plan <- reactive(balance_plan(price_active_counts(), price_settings()$q, chain_data_polled()$oracle))
+  output$price_balance <- renderText({
+    plan <- price_balance_plan()
+    if (is.na(plan$add)) "out of reach" else if (plan$add > 0) paste0("+", format_number(plan$add)) else
+      if (plan$leave > 0) paste0("-", format_number(plan$leave)) else "0"
+  })
+  output$price_balance_note <- renderText({
+    plan <- price_balance_plan()
+    if (is.na(plan$add)) "no number of nodes stops the rise at this participation" else
+      if (plan$add > 0) "active staked nodes to add, at the participation above" else
+        if (plan$leave > 0) "active staked nodes that could leave before the price stops falling" else "the price is flat already"
+  })
+  output$price_balance_text <- renderText({
+    plan <- price_balance_plan()
+    settings <- price_settings()
+    n <- price_active_counts()
+    day <- function(per_round) sprintf("%+.2f%%", drift_percent(rounds_per_day(settings$block_seconds) * per_round))
+    paste0(
+      sprintf("The price is flat when a neighbourhood has about 4 matching reveals per round, which at %.0f%% participation takes about %.2f active staked nodes per neighbourhood, against %.2f today. ",
+              100 * settings$q, 4 / max(settings$q, 0.01), mean(n)),
+      "Where nodes sit hardly matters for the price: each matching reveal moves it by almost the same step, from 0 up to 8 reveals, so only the total counts (above 8 per neighbourhood, extra reveals are ignored). ",
+      if (day(plan$even) == day(plan$now)) {
+        sprintf("Spreading today's nodes evenly would take %s moves and leave the change at %s a day. ", format_number(plan$moves), day(plan$now))
+      } else {
+        sprintf("Spreading today's nodes evenly would take %s moves and change the price by %s a day instead of %s. ",
+                format_number(plan$moves), day(plan$even), day(plan$now))
+      },
+      "Placement matters for keeping data safe instead: put new nodes in the empty and thin neighbourhoods on the Nbhood map first.")
+  })
+
+  # how well the model fits: the participation that reproduces the observed change, and what the
+  # chain shows directly about the same days
+  output$price_calibration <- renderText({
+    chain <- chain_data_polled()
+    fitted <- fitted_participation()
+    rounds <- round_stats(chain, input$activeDays)
+    fit_text <- if (is.na(fitted)) {
+      "No participation reproduces the observed change with these neighbourhood counts."
+    } else {
+      sprintf("A participation of %.0f%% reproduces the observed change.", 100 * fitted)
+    }
+    paste(fit_text, sprintf(
+      "On chain over the same %s days: %s rounds, %s of them claimed (%.1f%% not claimed), with %.2f matching reveals per claimed round on average, against %.2f active staked nodes per neighbourhood.",
+      format_number(input$activeDays), format_number(rounds$rounds), format_number(rounds$claimed),
+      100 * (1 - rounds$claimed / max(rounds$rounds, 1)), rounds$mean_matching, mean(price_active_counts())),
+      if (isTRUE(chain$oracle$paused)) "The price oracle is paused, so the price does not change at all." else "")
+  })
+
+  output$pricePlot <- renderPlot({
+    model <- price_model()
+    history <- model$chain$prices
+    plot <- ggplot() +
+      geom_step(data = history, aes(x = time, y = price), colour = swarm_colours$text, linewidth = 1) +
+      geom_line(data = model$projection, aes(x = time, y = price), colour = swarm_colours$orange, linetype = "dashed", linewidth = 1.2) +
+      geom_vline(xintercept = model$chain$head_time, colour = swarm_colours$muted, linetype = "dotted")
+    if (isTRUE(input$extraNodes > 0)) {
+      # the same projection without the extra nodes, for comparison
+      plain <- project_price(model$chain$price, model$chain$head_time,
+                             model_drift(price_active_counts(), model$settings$q, model$chain$oracle, model$settings$block_seconds),
+                             model$settings$days, model$chain$oracle$minimum_price)
+      plot <- plot + geom_line(data = plain, aes(x = time, y = price), colour = swarm_colours$muted, linetype = "dashed", linewidth = 1)
+    }
+    plot + scale_y_continuous(labels = function(x) format_number(x)) +
+      swarm_plot_theme +
+      labs(x = NULL, y = "PLUR per chunk per block",
+           caption = paste("White: price updates on chain. Orange, dashed: projection.",
+                           if (isTRUE(input$extraNodes > 0)) "Grey, dashed: projection without the extra nodes." else "")) +
+      # larger, bold text: the plot is wide, and the shared theme's sizes read too small here
+      theme(axis.text = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 15),
+            axis.title.y = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16),
+            plot.caption = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 14))
+  }, bg = swarm_colours$bg)
 
   # table of staked overlays from the chain, with each one's latest reveal in the window
   output$stakes_table <- DT::renderDataTable({

@@ -7,17 +7,24 @@
 chain_contracts <- list(
   redistribution = list(address = "0x5069cdfB3D9E56d23B1cAeE83CE6109A7E4fd62d", deployed = 41105199),
   staking        = list(address = "0xda2a16EE889E7F04980A8d597b48c8D51B9518F4", deployed = 40430237),
-  price_oracle   = list(address = "0x47EeF336e7fE5bED98499A4696bce8f28c1B0a8b", deployed = 37339168)
+  price_oracle   = list(address = "0x47EeF336e7fE5bED98499A4696bce8f28c1B0a8b", deployed = 37339168),
+  postage_stamp  = list(address = "0x45a1502382541Cd610CC9068e88727426b696293", deployed = 31305656)
 )
 # keccak256 of the event signatures (topic0) and the 4-byte selectors of the view functions
 chain_topics <- list(
   revealed      = "0x13fc17fd71632266fe82092de6dd91a06b4fa68d8dc950492e5421cbed55a6a5", # Revealed(uint256,bytes32,uint256,uint256,bytes32,uint8)
   truth         = "0x34e8eda4cd857cd2865becf58a47748f31415f4a382cbb2cc0c64b9a27c717be", # TruthSelected(bytes32,uint8)
   stake_updated = "0x8fb3da6e133de1007392b10d429548e9c2565c791c52e1498b01b65d8797e74c", # StakeUpdated(address,uint256,uint256,bytes32,uint256,uint8)
-  price_update  = "0xae46785019700e30375a5d7b4f91e32f8060ef085111f896ebf889450aa2ab5a"  # PriceUpdate(uint256)
+  price_update  = "0xae46785019700e30375a5d7b4f91e32f8060ef085111f896ebf889450aa2ab5a", # PriceUpdate(uint256)
+  anchor        = "0xf0ae472da9c8da86bda4991a549c03a3cb328b5f360ea11a5b8814f32bb85176", # CurrentRevealAnchor(uint256,bytes32)
+  pot_withdrawn = "0xf5d8f9b1e7af440e1e7915f4693ccc004d1461a7dafd17ea7347d03decf298e1"  # PotWithdrawn(address,uint256)
 )
 chain_selectors <- list(current_price = "0x9d1b464a",  # currentPrice()
-                        stakes = "0x16934fc4")         # stakes(address)
+                        stakes = "0x16934fc4",         # stakes(address)
+                        change_rate = "0x74e7493b",    # changeRate(uint256)
+                        price_base = "0x7310561b",     # priceBase()
+                        minimum_price = "0x7f386b6c",  # minimumPrice()
+                        is_paused = "0xb187bd26")      # isPaused()
 
 round_length_blocks <- 152           # Redistribution.ROUND_LENGTH
 bzz_base_units <- 1e16               # BZZ has 16 decimals
@@ -151,6 +158,17 @@ decode_truth <- function(logs) {
              truth_depth = hex_to_number(abi_word(logs$data, 2)))
 }
 
+# CurrentRevealAnchor is emitted with a round's first reveal: the anchor's first bits name the
+# neighbourhood drawn. A round in which nobody reveals emits no anchor
+decode_anchor <- function(logs) {
+  data.frame(time = logs$time, round = hex_to_number(abi_word(logs$data, 1)), anchor = tolower(abi_word(logs$data, 2)))
+}
+
+# PotWithdrawn: the pot paid to a round's winner when it claims (PostageStamp.withdraw)
+decode_pot <- function(logs) {
+  data.frame(block = logs$block, time = logs$time, amount_bzz = hex_to_number(abi_word(logs$data, 2)) / bzz_base_units)
+}
+
 decode_price_update <- function(logs) {
   data.frame(block = logs$block, time = logs$time, price = hex_to_number(abi_word(logs$data, 1)))
 }
@@ -188,6 +206,16 @@ read_stakes <- function(owners, price, head_block) {
   stakes
 }
 
+# the PriceOracle's parameters, read from the deployed contract: changeRate[0..8] (the price is
+# multiplied by changeRate[redundancy] / priceBase once per claimed round), the minimum price
+# and whether price changes are paused
+read_oracle <- function() {
+  calls <- c(paste0(chain_selectors$change_rate, sprintf("%064x", 0:8)),
+             chain_selectors$price_base, chain_selectors$minimum_price, chain_selectors$is_paused)
+  answers <- hex_to_number(rpc_eth_calls(chain_contracts$price_oracle$address, calls))
+  list(change_rate = answers[1:9], price_base = answers[10], minimum_price = answers[11], paused = answers[12] != 0)
+}
+
 ### one complete read, or an update of the previous one
 # previous: the last chain data, or NULL. Only blocks after previous$to_block are read again;
 # stakes are re-read in full every time, because freezes, withdrawals and height changes do not
@@ -213,6 +241,9 @@ fetch_chain_data <- function(previous = NULL) {
   truths <- decode_truth(logs_table(fetch_logs(redistribution, chain_topics$truth, from, head_block)))
   prices <- decode_price_update(date_logs(logs_table(
     fetch_logs(chain_contracts$price_oracle$address, chain_topics$price_update, from, head_block))))
+  anchors <- decode_anchor(date_logs(logs_table(fetch_logs(redistribution, chain_topics$anchor, from, head_block))))
+  pots <- decode_pot(date_logs(logs_table(
+    fetch_logs(chain_contracts$postage_stamp$address, chain_topics$pot_withdrawn, from, head_block))))
   owner_from <- if (is.null(previous)) chain_contracts$staking$deployed else previous$to_block + 1
   owners <- stake_owners(logs_table(fetch_logs(chain_contracts$staking$address, chain_topics$stake_updated,
                                                owner_from, head_block)))
@@ -222,9 +253,12 @@ fetch_chain_data <- function(previous = NULL) {
     reveals <- rbind(previous$reveals[keep, names(reveals)], reveals)
     truths <- unique(rbind(previous$truths, truths))
     prices <- rbind(previous$prices[previous$prices$block >= window_start, ], prices)
+    anchors <- unique(rbind(previous$anchors, anchors))
+    pots <- rbind(previous$pots[previous$pots$block >= window_start, ], pots)
     owners <- unique(c(previous$owners, owners))
   }
   truths <- truths[truths$round >= window_start %/% round_length_blocks, ]
+  anchors <- anchors[anchors$round >= window_start %/% round_length_blocks, ]
 
   # a reveal matches when its commitment and depth equal the truth chosen in its round; reveals
   # in rounds not yet claimed (or never claimed) have no truth and stay NA
@@ -234,8 +268,8 @@ fetch_chain_data <- function(previous = NULL) {
   price <- hex_to_number(rpc_call("eth_call", list(list(to = chain_contracts$price_oracle$address,
                                                         data = chain_selectors$current_price), "latest")))
   list(to_block = head_block, head_time = head_time, window_start = window_start,
-       price = price, prices = prices, reveals = reveals, truths = truths, owners = owners,
-       stakes = read_stakes(owners, price, head_block))
+       price = price, prices = prices, reveals = reveals, truths = truths, anchors = anchors, pots = pots, owners = owners,
+       stakes = read_stakes(owners, price, head_block), oracle = read_oracle())
 }
 
 ### accessors for the views
@@ -243,8 +277,9 @@ fetch_chain_data <- function(previous = NULL) {
 chain_reveals <- function(chain) chain$reveals
 # one row per staked overlay: stake, effective stake, height, frozen, whether it may play
 chain_stakes <- function(chain) chain$stakes
-# the current price and the price updates in the window, in PLUR per chunk per block
-chain_price <- function(chain) list(current = chain$price, history = chain$prices)
+# the current price and the price updates in the window, in PLUR per chunk per block, and the
+# oracle's parameters
+chain_price <- function(chain) list(current = chain$price, history = chain$prices, oracle = chain$oracle)
 
 # the latest reveal of each overlay within the last `days` days
 last_reveals <- function(chain, days) {

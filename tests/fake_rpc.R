@@ -5,7 +5,9 @@
 # Revealed and TruthSelected logs of Redistribution and the PriceUpdate logs of the PriceOracle
 # for the 5,320 blocks before that block (6 hours plus 1,000 blocks), the StakeUpdated history of
 # every owner whose overlay revealed in that span plus 20 other owners, those owners' stakes()
-# answers, and currentPrice(). Logs keep only the fields the app reads.
+# answers, the CurrentRevealAnchor logs of Redistribution and the PotWithdrawn logs of PostageStamp
+# for the same span, currentPrice(), and the PriceOracle's changeRate(0..8), priceBase(), minimumPrice() and
+# isPaused() answers. Logs keep only the fields the app reads.
 
 chain_fixture <- jsonlite::fromJSON("tests/fixtures/chain-sample.json", simplifyVector = FALSE)
 
@@ -38,7 +40,11 @@ fake_answer <- function(call) {
     },
     eth_call = {
       to <- tolower(params[[1]]$to); data <- params[[1]]$data
-      if (to == tolower(chain_contracts$price_oracle$address)) return(answer(chain_fixture$current_price))
+      if (to == tolower(chain_contracts$price_oracle$address)) {
+        if (data == chain_selectors$current_price) return(answer(chain_fixture$current_price))
+        recorded <- chain_fixture$oracle_calls[[data]]
+        return(if (is.null(recorded)) refuse("execution reverted") else answer(recorded))
+      }
       if (fake_rpc$drop_calls > 0) { fake_rpc$drop_calls <- fake_rpc$drop_calls - 1; return(refuse("rate limit")) }
       stake <- chain_fixture$stakes[[paste0("0x", substr(data, 35, 74))]]
       answer(if (is.null(stake)) paste0("0x", strrep("0", 320)) else stake)
