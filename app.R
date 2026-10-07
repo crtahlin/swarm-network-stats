@@ -356,7 +356,7 @@ ui <-
                       checkboxInput("onlyFullNodes", "Show only full nodes",
                                     value = TRUE),
                       numericInput("activeDays", "Active within (days)",
-                                   value = 7, min = 1, max = chain_window_days, step = 1),
+                                   value = chain_window_days, min = 1, max = chain_window_days, step = 1),
                       textOutput("data_status"),
                       textOutput("chain_status")),
     # panels part
