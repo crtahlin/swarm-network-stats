@@ -39,6 +39,8 @@ suppressWarnings(suppressPackageStartupMessages(eval(parse(text = src))))
 # the chain answers from tests/fixtures/chain-sample.json; its window is 6 hours, as recorded
 source("tests/fake_rpc.R")
 chain_window_days <- 0.25
+# the saved storage history changes as it is extended; the tests use their own
+storage_history_data <- read_storage_history(tempfile())
 
 passed <- 0; failed <- 0
 check <- function(label, ok, detail = "") {
@@ -77,6 +79,9 @@ expected_max_radius <- function(bits, minimum) {
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
                  "price_balance", "price_balance_note", "price_balance_text",
+                 "light_verdict", "light_capable", "light_capable_note", "light_places", "light_places_note", "light_transport_note",
+                 "light_input_warning", "light_most", "light_most_note", "light_load", "light_load_note", "light_list_note",
+                 "light_takes", "light_start_burst", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -101,7 +106,9 @@ for (variant in variants) {
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
-                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                        clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
+                        listNodes = 0, expectedClients = 4000)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -579,10 +586,236 @@ testServer(server, {
         length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
         paste("fitted", fitted))
   check("price tab - the calibration counts exclude extra nodes", grepl(sprintf("against %.2f active staked", mean(n)), output$price_calibration))
+  head_time <- as.numeric(chain_cache$data$head_time)
+  session$setInputs(pricePlot_pointer = list(x = head_time - 3600, y = 1))
+  check("price tab - the pointer reads the price on chain", grepl("price", output$pricePlot_hover) && !grepl("projection", output$pricePlot_hover),
+        output$pricePlot_hover)
+  session$setInputs(pricePlot_pointer = list(x = head_time + 10 * 86400, y = 1))
+  check("price tab - in the future the pointer reads the projection", grepl("projection", output$pricePlot_hover), output$pricePlot_hover)
+  session$setInputs(pricePlot_brush = list(xmin = head_time - 4 * 3600, xmax = head_time + 86400))
+  check("price tab - the plot renders zoomed in", !inherits(output_or_error(output$pricePlot), "output_error"))
   session$setInputs(horizonDays = 0)
   check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
 })
 rm(updateSliderInput)
+
+### Storage growth (R/storage_history.R)
+prepared <- prepare_nodes_data(fixture)
+status <- prepared$statusSnapshot
+usable <- !is.na(status$reserveSizeWithinRadius) & !is.na(status$storageRadius) & status$reserveSizeWithinRadius > 0 & status$storageRadius > 0
+check("storage - the estimate is the median of reserve x 4096 x 2^radius, in TiB",
+      isTRUE(all.equal(estimate_stored_tib(prepared),
+                       median(status$reserveSizeWithinRadius[usable] * 4096 * 2^status$storageRadius[usable]) / 2^40)))
+row <- summarise_dump(prepared, "2026-09-30")
+check("storage - one history row from a dump", row$measure == "within radius" && row$nodes == nrow(prepared) &&
+        row$nodes_reporting == sum(usable) && row$radius_mode == as.integer(names(which.max(table(status$storageRadius[usable])))) &&
+        isTRUE(all.equal(row$fullness_median, median(status$reserveSizeWithinRadius[usable]) / 2^22)))
+old_dump <- data.frame(overlay = c("a", "b", "c"))
+old_dump$statusSnapshot <- data.frame(reserveSize = c(2^21, 2^22, 0), storageRadius = c(10, 10, 0))
+old_row <- summarise_dump(old_dump, "2024-01-20")
+check("storage - an old dump falls back to the whole reserve", old_row$measure == "whole reserve" && old_row$nodes_reporting == 2 &&
+        isTRUE(all.equal(old_row$stored_tib, median(c(2^21, 2^22) * 4096 * 2^10) / 2^40)))
+# as bee reports them: a node with doubling d has storageRadius = committedDepth - d and a reserve over 2^d neighbourhoods
+doubled <- data.frame(overlay = c("a", "b", "c"))
+doubled$statusSnapshot <- data.frame(reserveSizeWithinRadius = c(0.9, 1.8, 7.2) * 2^22, storageRadius = c(9, 8, 6), committedDepth = 9)
+doubled_row <- summarise_dump(doubled, "2026-10-07")
+check("storage - doubled nodes: fullness against their own capacity, stored data unchanged",
+      isTRUE(all.equal(doubled_row$fullness_p90, 0.9)) && isTRUE(all.equal(doubled_row$stored_tib, 0.9 * 2^22 * 4096 * 2^9 / 2^40)),
+      paste(doubled_row$fullness_p90, doubled_row$stored_tib))
+check("storage - a zero-byte history file reads as empty", { f <- tempfile(); file.create(f); nrow(read_storage_history(f)) == 0 })
+check("storage - capacity at radius 9 is 8 TiB", capacity_tib(9) == 8)
+check("storage - no history file gives an empty history", nrow(read_storage_history(tempfile())) == 0)
+# a synthetic history: 5 TiB growing by 0.01 TiB a day, plus older days of the old measure that the fit ignores
+days <- seq(as.Date("2026-06-01"), as.Date("2026-10-06"), by = "day")
+synthetic <- data.frame(date = days, measure = "within radius", nodes = 5000, nodes_reporting = 2400, radius_mode = 9L,
+                        reserve_median = 3e6, fullness_median = 0.7 + 0.002 * seq_along(days), fullness_p90 = 0.8,
+                        stored_tib = 5 + 0.01 * as.numeric(days - days[1]))
+older <- synthetic[1:10, ]; older$date <- older$date - 400; older$measure <- "whole reserve"; older$stored_tib <- 99
+synthetic <- rbind(older, synthetic)
+fit <- fit_growth(synthetic, 90)
+check("storage - the straight-line fit finds the growth", isTRUE(all.equal(unname(stats::coef(fit$linear)[2]), 0.01)))
+expected_cross <- days[1] + (8 - 5) / 0.01
+check("storage - the straight line crosses 8 TiB on the right day", identical(crossing_date(fit, 8, "linear"), expected_cross),
+      format(crossing_date(fit, 8, "linear")))
+check("storage - a growing curve never reaches a lower level", is.na(crossing_date(fit, 4, "linear", "down")))
+# a level the fitted line passed inside the fit window, but the measured data has not: the day after the window
+check("storage - a level the fit already passed is reached the day after the fit window",
+      identical(crossing_date(fit, 4, "linear", "up"), fit$to + 1))
+check("storage - the exponential fit crosses later points at increasing dates",
+      crossing_date(fit, 16, "exponential") > crossing_date(fit, 8, "exponential"))
+check("storage - the fit ignores days of the older measure", fit$from >= days[1])
+thin <- synthetic; thin$nodes_reporting[nrow(thin)] <- 5; thin$stored_tib[nrow(thin)] <- 500
+check("storage - the fit ignores days with too few reporting nodes", isTRUE(all.equal(unname(stats::coef(fit_growth(thin, 90)$linear)[2]), 0.01)))
+check("storage - a dump without status is marked", summarise_dump(data.frame(overlay = "a"), "2026-09-30")$measure == "no status")
+check("storage - too little history gives no fit", is.null(fit_growth(synthetic[nrow(synthetic) - 1:0, ], 90)))
+projection <- project_growth(fit, 30)
+grown <- assumed_growth(as.Date("2026-10-07"), 7, 10, 365)
+check("storage - assumed growth compounds per month", isTRUE(all.equal(tail(grown$stored_tib, 1), 7 * 1.1^(365 / (365.25 / 12)))) && nrow(grown) == 366)
+check("storage - assumed growth reaches a level on the right day",
+      identical(assumed_crossing(as.Date("2026-10-07"), 7, 10, 7 * 1.1^3), as.Date("2026-10-07") + floor(3 * 365.25 / 12)))
+check("storage - shrinking never reaches a higher level", is.na(assumed_crossing(as.Date("2026-10-07"), 7, -5, 8)))
+check("storage - the projection reaches the horizon for both fits", max(projection$date) == max(days) + 30 && setequal(projection$fit, c("Straight line", "Exponential")))
+
+# zoom and pointer helpers (R/time_plots.R)
+pts <- data.frame(x = as.Date("2026-01-01") + 0:9, y = c(1, 2, 3, 10, 5, 6, 7, 8, 9, 4))
+lim <- zoom_limits(as.numeric(as.Date(c("2026-01-02", "2026-01-04"))), list(pts))
+check("zoom - y covers only the points in view, with some room", lim$y[1] < 2 && lim$y[1] > 1.4 && lim$y[2] > 10 && lim$y[2] < 10.5)
+check("zoom - no zoom is the whole plot", is.null(zoom_limits(NULL, list(pts))))
+check("zoom - the coordinates take date limits", inherits(zoom_coord(lim, "date")$limits$x, "Date"))
+at <- as.numeric(as.Date("2026-01-04")) + 0.3
+check("pointer - nearest point", value_at(pts, at) == 10)
+check("pointer - a step series holds the last value", value_at(pts, as.numeric(as.Date("2026-01-05")) - 0.1, step = TRUE) == 10)
+check("pointer - outside a series gives NA", is.na(value_at(pts, as.numeric(as.Date("2026-02-01")), max_gap = 0)))
+
+storage_history_data <- synthetic
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
+                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                        clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
+                        listNodes = 0, expectedClients = 4000)
+  summary <- output$growth_summary
+  check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
+          grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date (not reached)", summary, fixed = TRUE) &&
+          grepl("Projection from a fit to", summary, fixed = TRUE), summary)
+  check("growth tab - plots render", !inherits(output_or_error(output$growthPlot), "output_error") &&
+          !inherits(output_or_error(output$fullnessPlot), "output_error"))
+  check("growth tab - hint until the pointer is over the plot", output$growthPlot_hover == time_plot_hint)
+  at <- as.numeric(as.Date("2026-08-01"))
+  session$setInputs(growthPlot_pointer = list(x = at + 0.2, y = 6))
+  hover <- output$growthPlot_hover
+  expected_stored <- synthetic$stored_tib[synthetic$date == as.Date("2026-08-01") & synthetic$measure == "within radius"]
+  check("growth tab - the pointer reads the date and the stored data", grepl("2026-08-01", hover, fixed = TRUE) &&
+          grepl(sprintf("stored %s TiB at radius 9", format_number(round(expected_stored, 2))), hover, fixed = TRUE), hover)
+  session$setInputs(growthPlot_pointer = list(x = as.numeric(as.Date("2026-12-01")), y = 7))
+  future <- output$growthPlot_hover
+  check("growth tab - in the future the pointer reads the fits", grepl("straight line", future) && grepl("exponential", future) && !grepl("stored", future), future)
+  session$setInputs(fullnessPlot_pointer = list(x = at, y = 80))
+  check("growth tab - the fullness pointer reads median and 90th percentile", grepl("2026-08-01 | median", output$fullnessPlot_hover, fixed = TRUE))
+  # drag to zoom, double-click to zoom out: the plot renders both ways
+  session$setInputs(growthPlot_brush = list(xmin = as.numeric(as.Date("2026-07-01")), xmax = as.numeric(as.Date("2026-09-01"))))
+  check("growth tab - the plot renders zoomed in", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(growthPlot_dblclick = list(x = at, y = 6))
+  check("growth tab - the plot renders zoomed out again", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(growthPlot_brush = list(xmin = as.numeric(as.Date("2026-07-01")), xmax = as.numeric(as.Date("2026-09-01"))), growthPlot_zoomout = 1)
+  check("growth tab - the Zoom out link renders the whole plot", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(assumedGrowth = 5)
+  summary_assumed <- output$growth_summary
+  now_row <- tail(synthetic, 1)
+  expected_date <- assumed_crossing(as.Date(current_time()), now_row$stored_tib, 5, 8)
+  check("growth tab - the assumed growth gives its own crossing dates", grepl("Assumed +5% a month from 20", summary_assumed, fixed = TRUE),
+        summary_assumed)
+  session$setInputs(growthPlot_pointer = list(x = as.numeric(as.Date("2026-12-01")), y = 7))
+  check("growth tab - the pointer reads the assumed growth", grepl("assumed +5% a month", output$growthPlot_hover, fixed = TRUE))
+  check("growth tab - the plot renders with the assumed growth", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(assumedGrowth = -100)
+  check("growth tab - an assumed growth of -100% keeps the rest of the summary", grepl("must be above -100%", output$growth_summary) &&
+          grepl("Straight line", output$growth_summary))
+  session$setInputs(storageRadius = 2)
+  check("growth tab - a level already passed says so", grepl("radius rises to 3: already above", output$growth_summary, fixed = TRUE))
+  session$setInputs(storageRadius = 9, growthPlot_pointer = list(x = as.numeric(as.Date("2020-01-01")), y = 1))
+  check("growth tab - the pointer far from any data shows only the date", output$growthPlot_hover == "2020-01-01")
+  session$setInputs(assumedGrowth = 0)
+  check("growth tab - 0% leaves the assumed growth out", !grepl("Assumed", output$growth_summary) && is.null(isolate(growth_series())$Assumed))
+  session$setInputs(fitDays = 3)
+  check("growth tab - a fit window under 7 days shows a message", grepl("Fit over 7 days", output_or_error(output$growth_summary)))
+})
+storage_history_data <- read_storage_history(tempfile())
+
+### Connectivity: browser client capacity (R/light_capacity.R)
+# the sample has no secure WebSocket addresses (its underlays were reduced), so two full nodes get one
+with_wss <- fixture
+wss_rows <- which(with_wss$nodes$fullNode %in% TRUE)[1:2]
+for (i in wss_rows) with_wss$nodes$underlays[[i]] <- rbind(with_wss$nodes$underlays[[i]],
+  data.frame(address = "/ip4/198.18.0.9/tcp/1635/tls/sni/198-18-0-9.k2k4.libp2p.direct/ws/p2p/16Uiu2"))
+# address kinds: WSS, plain TCP (including DNS names starting with "ws") and anything else
+kinds <- fixture
+kinds$nodes <- kinds$nodes[1:3, ]
+kinds$nodes$fullNode <- TRUE
+kinds$nodes$underlays <- list(data.frame(address = "/ip4/198.18.0.1/tcp/1635/tls/sni/x.libp2p.direct/ws/p2p/A"),
+                              data.frame(address = "/dns4/ws.example.org/tcp/1634/p2p/B"),
+                              data.frame(address = "/ip4/198.18.0.3/udp/1634/quic-v1/p2p/C"))
+kp <- prepare_nodes_data(kinds)
+check("light - address kinds: WSS, plain TCP with a ws-like DNS name, and other",
+      identical(kp$secure_websocket, c(TRUE, FALSE, FALSE)) && identical(kp$plain_tcp, c(FALSE, TRUE, FALSE)) &&
+        identical(kp$other_address, c(FALSE, FALSE, TRUE)))
+check("light - only full nodes offering a secure WebSocket address are counted",
+      browser_capable_nodes(prepare_nodes_data(with_wss)) == 2 && browser_capable_nodes(prepared) == 0)
+# without a start-up list: 2,493 nodes x 100 places / 200 connections = 1,246 clients
+cap <- client_capacity(2493, 100, 200, clients = 4000)
+check("light - even spread", cap$on_list == 0 && cap$elsewhere == 200 && cap$most == 1246 && cap$bound_by == "network")
+check("light - demand against capacity", isTRUE(all.equal(cap$load, 4000 / 1246)))
+check("light - a client cannot connect to more nodes than there are", client_capacity(50, 100, 200)$elsewhere == 50 &&
+        client_capacity(50, 100, 200)$most == 100)
+check("light - no nodes, no room", client_capacity(0, 100, 200, clients = 10)$most == 0 && !is.finite(client_capacity(0, 100, 200, clients = 10)$load))
+# with a start-up list of 300 nodes taking 150 of 200 connections: the list holds 300 x 100 / 150 = 200 clients
+with_list <- client_capacity(2193, 100, 200, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150, clients = 4000)
+check("light - a start-up list fills first", with_list$on_list == 150 && with_list$elsewhere == 50 && with_list$list_clients == 200 &&
+        with_list$other_clients == floor(2193 * 100 / 50) && with_list$most == 200 && with_list$bound_by == "list")
+# what it would take, without bootnodes: 2,493 x 100 / 4,000 = 62 peers; 4,000 x 200 / 2,493 = 321 light-node-limit; 8,000 nodes
+t <- what_it_takes(2493, 100, 200, 4000)
+check("light - what it takes without bootnodes", identical(t$change, c("peers", "limit", "nodes")) &&
+        identical(t$value, c(62, 321, 8000)) && all(t$status == "enough"), paste(t$value, t$status, collapse = " "))
+check("light - clients that already fit need no change", identical(what_it_takes(2493, 100, 200, 10)$status, "already enough") &&
+        identical(what_it_takes(2493, 100, 200, 0)$status, "already enough"))
+# more peers per client than nodes: 50 nodes hold 5,000 light peers; 400 clients x 200 peers need 800 nodes
+check("light - nodes needed use the uncapped peers per client", what_it_takes(50, 100, 200, 400)$value[3] == 800 &&
+        client_capacity(800, 100, 200)$most == 400)
+# with 300 bootnodes taking 150 of 200 peers: the other 2,193 nodes (50 peers) hold 4,386, already enough; the bootnodes
+# hold 200: 7 bootnode peers (not enough: the other 193 hold 1,136), 2,000 light-node-limit (enough), 6,000 bootnodes (not possible)
+tl <- what_it_takes(2493, 100, 200, 4000, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150)
+check("light - with bootnodes: the other nodes are already enough", tl$status[tl$change == "other"] == "already enough" &&
+        tl$value[tl$change == "other"] == 4386)
+check("light - with bootnodes: fewer bootnode peers is not enough on its own",
+      tl$value[tl$change == "bootnode_peers"] == 7 && tl$status[tl$change == "bootnode_peers"] == "not enough on its own")
+check("light - with bootnodes: a higher light-node-limit on them is enough",
+      tl$value[tl$change == "bootnode_limit"] == 2000 && tl$status[tl$change == "bootnode_limit"] == "enough")
+check("light - with bootnodes: more bootnodes than WSS full nodes is not possible",
+      tl$value[tl$change == "bootnodes"] == 6000 && tl$status[tl$change == "bootnodes"] == "not possible")
+# all peers on the bootnodes: no row for the other nodes, so no "Inf"
+all_on_list <- what_it_takes(2493, 100, 150, 4000, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150)
+check("light - with every peer on the bootnodes there is no row for the other nodes", !("other" %in% all_on_list$change) &&
+        all(is.finite(all_on_list$value)))
+check("light - dial attempts use the bootnode peers each client keeps", start_attempts_per_node(4000, 300, 150) == 2000)
+check("light - with every WSS full node a bootnode there is no row for the other nodes",
+      !("other" %in% what_it_takes(300, 100, 200, 4000, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150)$change))
+check("light - no WSS full nodes is not possible", identical(what_it_takes(0, 100, 200, 10)$status, "not possible"))
+storage_history_data <- read_storage_history(tempfile())
+fetch_swarmscan_data <- function() with_wss
+swarm_cache$data <- NULL; swarm_cache$version <- 0; swarm_cache$next_attempt <- -Inf
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, otherLimit = 100, listNodes = 0, startDials = 0,
+                    listLimit = 100, clientConnections = NA, expectedClients = NA)
+  check("light tab - network facts show without client numbers", output$light_capable == "2" && output$light_places == "200")
+  check("light tab - no verdict until the client's numbers are entered", grepl("Set peers per client and concurrent clients", output$light_verdict$html) &&
+          output$light_most == "–" && !inherits(output_or_error(output$lightPlot), "output_error"))
+  check("light tab - the transport sentence uses the data", grepl("2 a WSS underlay", output$light_transport_note, fixed = TRUE))
+  session$setInputs(clientConnections = 2, expectedClients = 400)
+  # 2 nodes x 100 places / 2 connections = 100 clients
+  check("light tab - clients at once", output$light_most == "100", output$light_most)
+  verdict <- output$light_verdict$html
+  check("light tab - the verdict states the clients and the maximum", grepl("Over capacity: 400 concurrent clients", verdict, fixed = TRUE) &&
+          grepl("at most 100", verdict, fixed = TRUE), verdict)
+  check("light tab - demand is red when over capacity", grepl(swarm_colours$unreachable, output$light_load$html, fixed = TRUE))
+  check("light tab - no bootnode list by default", output$light_list_note == "" && output$light_start_burst == "")
+  takes <- output$light_takes
+  check("light tab - three changes without bootnodes", lengths(regmatches(takes, gregexpr("<tr", takes))) == 4 && grepl("Result", takes, fixed = TRUE))
+  session$setInputs(listNodes = 5, startDials = 0)
+  check("light tab - warnings for a list longer than the reachable nodes and a list with no connections",
+        grepl("More bootnodes than WSS full nodes", output$light_input_warning) && grepl("0 bootnode peers per client", output$light_input_warning))
+  session$setInputs(listNodes = 1, startDials = 3)
+  check("light tab - a warning for more bootnode peers than peers", grepl("exceed peers per client", output$light_input_warning))
+  session$setInputs(listNodes = 1, startDials = 2)
+  check("light tab - a warning for more bootnode peers than bootnodes", grepl("exceed the bootnodes", output$light_input_warning))
+  session$setInputs(clientConnections = 1, listNodes = 1, startDials = 1)
+  check("light tab - all peers on bootnodes: no Inf in the note", grepl("no peers on other nodes", output$light_list_note) &&
+          !grepl("Inf", output$light_list_note) && !grepl("Inf", output$light_takes))
+  session$setInputs(clientConnections = 2, startDials = 1)
+  check("light tab - bootnodes add their rows and the dial-attempt line",
+        grepl("dial attempts", output$light_start_burst) && grepl("bootnode", output$light_takes))
+  session$setInputs(listNodes = 0, startDials = 0, otherLimit = 100, expectedClients = 10)
+  check("light tab - few clients fit", grepl("Within capacity", output$light_verdict$html))
+})
+fetch_swarmscan_data <- function() fixture
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)

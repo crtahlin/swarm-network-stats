@@ -163,7 +163,20 @@ prepare_nodes_data <- function(swarmscan_data) {
     nodes_data$location_source[i] <- "same IP"
   }
   
-  # the underlay addresses were only needed for borrowing locations; dropping them halves the cache
+  # the kinds of address a node offers: a secure WebSocket address (/tls/.../ws), the only kind a
+  # browser on an HTTPS page can open; a plain TCP address; and anything else
+  address_kind <- function(u, kind) {
+    if (is.null(u) || NROW(u) == 0) return(FALSE)
+    secure_ws <- grepl("/tls/(sni/[^/]+/)?ws(/|$)", u$address)
+    plain_tcp <- grepl("^/(ip4|ip6|dns|dns4|dns6)/[^/]+/tcp/[0-9]+(/p2p/[^/]+)?$", u$address)
+    any(switch(kind, secure_ws = secure_ws, plain_tcp = plain_tcp, other = !secure_ws & !plain_tcp))
+  }
+  nodes_data$secure_websocket <- vapply(underlays, address_kind, logical(1), kind = "secure_ws")
+  nodes_data$plain_tcp <- vapply(underlays, address_kind, logical(1), kind = "plain_tcp")
+  nodes_data$other_address <- vapply(underlays, address_kind, logical(1), kind = "other")
+
+  # the underlay addresses were only needed for borrowing locations and the flag above; dropping
+  # them halves the cache
   nodes_data[["underlays"]] <- NULL
 
   nodes_data
@@ -237,6 +250,14 @@ source("R/chain.R", local = TRUE)
 source("R/nbhood_map.R", local = TRUE)
 # the Price projection
 source("R/price_model.R", local = TRUE)
+# stored data over time (the Data and Storage growth tabs); the history is built by
+# scripts/build_storage_history.R and read once when the app starts
+source("R/storage_history.R", local = TRUE)
+storage_history_data <- read_storage_history()
+# zoom and pointer read-outs for the plots against time
+source("R/time_plots.R", local = TRUE)
+# the Connectivity tab: light-client capacity
+source("R/light_capacity.R", local = TRUE)
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -336,6 +357,19 @@ swarm_plot_theme <- theme(
   axis.text = element_text(colour = "#aab2bc", family = "mono", size = 11),
   axis.title = element_text(colour = swarm_colours$text, family = "mono", size = 13),
   axis.ticks = element_line(colour = swarm_colours$line)
+)
+
+
+# larger, bold text for the wide plots (Price projection, Storage growth); the shared theme's sizes
+# read too small there
+swarm_readable_text <- theme(
+  axis.text = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 15),
+  axis.title.y = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16),
+  plot.caption = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 14),
+  legend.position = "top", legend.background = element_rect(fill = swarm_colours$bg),
+  legend.key = element_rect(fill = swarm_colours$bg),
+  legend.text = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 14),
+  legend.title = element_blank()
 )
 
 
@@ -456,7 +490,103 @@ ui <-
               actionButton("useFittedParticipation", "Set participation to the value that reproduces the observed change",
                            class = "btn-sm btn-outline-primary"),
               br(), br(),
-              plotOutput("pricePlot", height = "520px")),
+              div(style = "display: flex; justify-content: space-between; gap: 1em;",
+                  textOutput("pricePlot_hover", container = p),
+                  actionLink("pricePlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
+              plotOutput("pricePlot", height = "520px",
+                         brush = brushOpts("pricePlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
+                         dblclick = "pricePlot_dblclick", hover = hoverOpts("pricePlot_pointer", delay = 80, delayType = "throttle"))),
+
+    ###
+    nav_panel("Storage growth",
+              div(class = "section-label", "Stored data and the storage radius"),
+              p("Stored data is estimated from each node's reserve: the reserve within its radius times the number of ",
+                "neighbourhoods, taken as the median over the nodes that report it. The history has one value a day from ",
+                "swarmscan's archive of network dumps, plus today's. The fitted curves are projections of past growth, ",
+                "not forecasts. When a bee node's reserve exceeds its capacity (2^22 chunks, or 2^(22+d) with reserve doubling d), it ",
+                "evicts chunks outside its radius first and raises the radius only if that is not enough, that is when the chunks ",
+                "within its radius alone exceed capacity. It lowers the radius when the chunks within its radius are below 50% of ",
+                "capacity and pull-sync has stopped, checked every 15 minutes (bee pkg/storer/reserve.go, pkg/node/node.go). ",
+                "Reserves fill almost evenly across neighbourhoods, so the network's capacity at the radius set in the sidebar is ",
+                "where nodes split."),
+              layout_column_wrap(
+                width = 1/3, fill = FALSE,
+                numericInput("fitDays", "Fit over the last (days)", value = 90, min = 7, max = 1500, step = 1),
+                numericInput("growthHorizon", "Project ahead (days)", value = 180, min = 1, max = 1095, step = 1),
+                numericInput("assumedGrowth", "Assumed growth (% a month; 0 = off)", value = 0, min = -50, max = 500, step = 1)
+              ),
+              textOutput("growth_summary", container = p),
+              div(style = "display: flex; justify-content: space-between; gap: 1em;",
+                  textOutput("growthPlot_hover", container = p),
+                  actionLink("growthPlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
+              plotOutput("growthPlot", height = "560px",
+                         brush = brushOpts("growthPlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
+                         dblclick = "growthPlot_dblclick", hover = hoverOpts("growthPlot_pointer", delay = 80, delayType = "throttle")),
+              br(),
+              div(class = "section-label", "Reserve fullness"),
+              p("The chunks within each node's radius as a share of its reserve capacity (2^22 chunks, or 2^(22+d) with reserve ",
+                "doubling d). A bee node raises its radius when this goes above 100%, and lowers it below 50% once pull-sync has ",
+                "stopped. Each change of radius halves or doubles the share. Before nodes reported their reserve within radius ",
+                "(March 2024), the line shows the whole reserve, which overstates the share."),
+              div(style = "display: flex; justify-content: space-between; gap: 1em;",
+                  textOutput("fullnessPlot_hover", container = p),
+                  actionLink("fullnessPlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
+              plotOutput("fullnessPlot", height = "420px",
+                         brush = brushOpts("fullnessPlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
+                         dblclick = "fullnessPlot_dblclick", hover = hoverOpts("fullnessPlot_pointer", delay = 80, delayType = "throttle"))),
+
+    ###
+    nav_panel("Connectivity",
+              div(class = "section-label", "Browser light client capacity"),
+              p("How many browser light clients the network can serve concurrently. Pages served over HTTPS can only dial full nodes that advertise a WSS underlay, ",
+                "and each full node accepts up to --light-node-limit light peers (default 100)."),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                value_box(title = "WSS full nodes", value = textOutput("light_capable"), textOutput("light_capable_note", container = p)),
+                value_box(title = "WSS full nodes × light-node-limit", value = textOutput("light_places"), textOutput("light_places_note", container = p))
+              ),
+              div(class = "section-label", "Client"),
+              p("How many peers a client keeps, and whether it dials a fixed bootnode list first, depends on the client implementation. ",
+                "Set the values for the client you want to check; the result appears once peers per client and concurrent clients are set."),
+              layout_column_wrap(
+                width = 1/3, fill = FALSE,
+                numericInput("clientConnections", "Peers per client", value = NA, min = 1, max = 5000, step = 1),
+                numericInput("expectedClients", "Concurrent clients", value = NA, min = 0, max = 1e6, step = 100),
+                numericInput("otherLimit", "light-node-limit", value = 100, min = 1, max = 100000, step = 100)
+              ),
+              layout_column_wrap(
+                width = 1/3, fill = FALSE,
+                numericInput("listNodes", "Bootnodes (0 = none)", value = 0, min = 0, max = 100000, step = 1),
+                numericInput("startDials", "Bootnode peers per client", value = 0, min = 0, max = 5000, step = 1),
+                numericInput("listLimit", "light-node-limit on bootnodes", value = 100, min = 1, max = 100000, step = 100)
+              ),
+              textOutput("light_input_warning", container = p),
+              div(class = "section-label", "Result"),
+              uiOutput("light_verdict"),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                value_box(title = "Max concurrent clients", value = textOutput("light_most"), textOutput("light_most_note", container = p)),
+                value_box(title = "Load", value = uiOutput("light_load"), textOutput("light_load_note", container = p))
+              ),
+              textOutput("light_list_note", container = p),
+              div(class = "section-label", "What it would take"),
+              p("Each row changes one parameter so the concurrent clients fit, and says whether that change alone is sufficient."),
+              tableOutput("light_takes"),
+              textOutput("light_start_burst", container = p),
+              div(class = "section-label", "Max concurrent clients by peers per client"),
+              plotOutput("lightPlot", height = "400px"),
+              tags$details(
+                tags$summary("Assumptions and sources"),
+                tags$ul(
+                  tags$li("bee: defaultLightNodeLimit = 100, --light-node-limit since 2.8.2. A peer with FullNode = false counts as a light peer; ",
+                          "over the limit bee disconnects a random light peer (pkg/p2p/libp2p/libp2p.go)."),
+                  tags$li(textOutput("light_transport_note", inline = TRUE)),
+                  tags$li("Client peers are assumed to spread evenly over the WSS full nodes; bootnode peers evenly over the bootnodes, ",
+                          "one per node. Bootnodes are counted among the WSS full nodes."),
+                  tags$li("The maximum is an upper bound: it assumes no other light peers are already connected. What happens after nodes saturate is not modelled."),
+                  tags$li("The sidebar settings do not apply to this tab.")
+                )
+              )),
 
     # ###
     # nav_panel("Nbhood counts",
@@ -916,6 +1046,47 @@ server <- function(input, output, session) {
       if (isTRUE(chain$oracle$paused)) "The price oracle is paused, so the price does not change at all." else "")
   })
 
+  # zoom state of each plot against time: NULL for the whole plot, or the dragged period
+  plot_zoom <- function(name) {
+    zoom <- reactiveVal(NULL)
+    observeEvent(input[[paste0(name, "_brush")]], { b <- input[[paste0(name, "_brush")]]; zoom(c(b$xmin, b$xmax)) })
+    observeEvent(input[[paste0(name, "_dblclick")]], zoom(NULL))
+    observeEvent(input[[paste0(name, "_zoomout")]], zoom(NULL))
+    zoom
+  }
+  price_zoom <- plot_zoom("pricePlot")
+  growth_zoom <- plot_zoom("growthPlot")
+  fullness_zoom <- plot_zoom("fullnessPlot")
+
+  # the price plot's series, as x and y
+  price_series <- reactive({
+    model <- price_model()
+    series <- list(history = data.frame(x = model$chain$prices$time, y = model$chain$prices$price),
+                   projection = data.frame(x = model$projection$time, y = model$projection$price))
+    if (isTRUE(input$extraNodes > 0)) {
+      plain <- project_price(model$chain$price, model$chain$head_time,
+                             model_drift(price_active_counts(), model$settings$q, model$chain$oracle, model$settings$block_seconds),
+                             model$settings$days, model$chain$oracle$minimum_price)
+      series$plain <- data.frame(x = plain$time, y = plain$price)
+    }
+    series
+  })
+  output$pricePlot_hover <- renderText({
+    at <- input$pricePlot_pointer$x
+    if (is.null(at)) return(time_plot_hint)
+    series <- price_series()
+    parts <- c(format(as.POSIXct(at, origin = "1970-01-01", tz = "UTC"), "%Y-%m-%d %H:%M UTC"))
+    on_chain <- value_at(series$history, at, step = TRUE, max_gap = 0)
+    if (!is.na(on_chain) && at <= as.numeric(price_model()$chain$head_time)) parts <- c(parts, paste("price", format_number(on_chain), "PLUR"))
+    projected <- value_at(series$projection, at, max_gap = 0)
+    if (!is.na(projected)) parts <- c(parts, paste("projection", format_number(round(projected)), "PLUR"))
+    if (!is.null(series$plain)) {
+      plain <- value_at(series$plain, at, max_gap = 0)
+      if (!is.na(plain)) parts <- c(parts, paste("without the extra nodes", format_number(round(plain)), "PLUR"))
+    }
+    paste(parts, collapse = " | ")
+  })
+
   output$pricePlot <- renderPlot({
     model <- price_model()
     history <- model$chain$prices
@@ -923,22 +1094,329 @@ server <- function(input, output, session) {
       geom_step(data = history, aes(x = time, y = price), colour = swarm_colours$text, linewidth = 1) +
       geom_line(data = model$projection, aes(x = time, y = price), colour = swarm_colours$orange, linetype = "dashed", linewidth = 1.2) +
       geom_vline(xintercept = model$chain$head_time, colour = swarm_colours$muted, linetype = "dotted")
-    if (isTRUE(input$extraNodes > 0)) {
+    plain <- price_series()$plain
+    if (!is.null(plain)) {
       # the same projection without the extra nodes, for comparison
-      plain <- project_price(model$chain$price, model$chain$head_time,
-                             model_drift(price_active_counts(), model$settings$q, model$chain$oracle, model$settings$block_seconds),
-                             model$settings$days, model$chain$oracle$minimum_price)
-      plot <- plot + geom_line(data = plain, aes(x = time, y = price), colour = swarm_colours$muted, linetype = "dashed", linewidth = 1)
+      plot <- plot + geom_line(data = plain, aes(x = x, y = y), colour = swarm_colours$muted, linetype = "dashed", linewidth = 1)
     }
     plot + scale_y_continuous(labels = function(x) format_number(x)) +
       swarm_plot_theme +
       labs(x = NULL, y = "PLUR per chunk per block",
            caption = paste("White: price updates on chain. Orange, dashed: projection.",
                            if (isTRUE(input$extraNodes > 0)) "Grey, dashed: projection without the extra nodes." else "")) +
-      # larger, bold text: the plot is wide, and the shared theme's sizes read too small here
-      theme(axis.text = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 15),
-            axis.title.y = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16),
-            plot.caption = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 14))
+      swarm_readable_text +
+      zoom_coord(zoom_limits(price_zoom(), price_series()), "datetime")
+  }, bg = swarm_colours$bg)
+
+  ###############
+  # STORAGE GROWTH
+  ###############
+  # the saved history plus today's value from the current swarmscan data
+  # days with too few reporting nodes are left out
+  growth_history <- reactive({
+    today <- summarise_dump(swarm_data()$nodes, as.Date(current_time()))
+    history <- rbind(storage_history_data[storage_history_data$date != today$date, names(today)], today)
+    history <- history[history$nodes_reporting >= min_reporting_nodes, ]
+    history[order(history$date), ]
+  })
+  growth_fit <- reactive({
+    shiny::validate(shiny::need(isTRUE(input$fitDays >= 7), "Fit over 7 days or more."))
+    shiny::validate(shiny::need(isTRUE(input$growthHorizon >= 1), "Project at least 1 day ahead."))
+    shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
+    history <- growth_history()
+    shiny::validate(shiny::need(nrow(history) > 0, "No stored-data history yet, and the current swarmscan data has too few nodes reporting their reserve."))
+    fit <- fit_growth(history, input$fitDays)
+    radius <- input$storageRadius
+    lines <- data.frame(level = c(capacity_tib(radius), capacity_tib(radius + 1), capacity_tib(radius) / 2),
+                        label = c(sprintf("radius rises to %d", radius + 1), sprintf("radius rises to %d", radius + 2),
+                                  sprintf("radius falls to %d", radius - 1)))
+    list(history = history, fit = fit, lines = lines, radius = radius)
+  })
+
+  output$growth_summary <- renderText({
+    g <- growth_fit()
+    now <- tail(g$history, 1)
+    head_text <- sprintf("Stored on %s: %s TiB, with the median reserve %.0f%% full. Capacity at radius %d: %s TiB.",
+                         format(now$date, "%Y-%m-%d"), format_number(round(now$stored_tib, 2)), 100 * now$fullness_median,
+                         g$radius, format_number(capacity_tib(g$radius)))
+    if (is.null(g$fit)) return(paste(head_text, "There is not enough history in the fit window to fit a curve."))
+    # a line the stored data has already passed has no crossing ahead
+    passed <- function(i) if (i == 3) now$stored_tib < g$lines$level[i] else now$stored_tib >= g$lines$level[i]
+    crossing_text <- function(i, date) {
+      if (passed(i)) return(sprintf("%s: already %s", g$lines$label[i], if (i == 3) "below" else "above"))
+      sprintf("%s on %s", g$lines$label[i], if (is.na(date)) "no date (not reached)" else format(date, "%Y-%m-%d"))
+    }
+    describe <- function(kind, rate_text) {
+      crossings <- vapply(seq_len(nrow(g$lines)), function(i) crossing_text(i, crossing_date(g$fit, g$lines$level[i], kind,
+                                                                                                        if (i == 3) "down" else "up")), "")
+      paste0(rate_text, ": ", paste(crossings, collapse = "; "), ".")
+    }
+    slope <- stats::coef(g$fit$linear)[2]
+    growth <- 100 * (exp(stats::coef(g$fit$exponential)[2]) - 1)
+    assumed_text <- if (isTRUE(input$assumedGrowth <= -100)) "The assumed growth must be above -100% a month." else
+      if (isTRUE(input$assumedGrowth != 0)) {
+        crossings <- vapply(seq_len(nrow(g$lines)), function(i)
+          crossing_text(i, assumed_crossing(now$date, now$stored_tib, input$assumedGrowth, g$lines$level[i])), "")
+        paste0(sprintf("Assumed %+g%% a month from %s: ", input$assumedGrowth, format(now$date, "%Y-%m-%d")), paste(crossings, collapse = "; "), ".")
+      } else ""
+    paste(head_text, sprintf("Projection from a fit to %s to %s.", format(g$fit$from, "%Y-%m-%d"), format(g$fit$to, "%Y-%m-%d")),
+          describe("linear", sprintf("Straight line, %+.3f TiB a day", slope)),
+          describe("exponential", sprintf("Exponential, %+.2f%% a day", growth)), assumed_text)
+  })
+
+  # the growth plot's series, as x and y
+  growth_series <- reactive({
+    g <- growth_fit()
+    series <- list(stored = data.frame(x = g$history$date, y = g$history$stored_tib, radius = g$history$radius_mode,
+                                       measure = g$history$measure))
+    if (!is.null(g$fit)) {
+      projection <- project_growth(g$fit, input$growthHorizon)
+      for (kind in unique(projection$fit)) series[[kind]] <- data.frame(x = projection$date[projection$fit == kind],
+                                                                       y = projection$stored_tib[projection$fit == kind])
+    }
+    if (isTRUE(input$assumedGrowth != 0 && input$assumedGrowth > -100)) {
+      now <- tail(g$history, 1)
+      assumed <- assumed_growth(now$date, now$stored_tib, input$assumedGrowth, input$growthHorizon)
+      series$Assumed <- data.frame(x = assumed$date, y = assumed$stored_tib)
+    }
+    series
+  })
+  output$growthPlot_hover <- renderText({
+    at <- input$growthPlot_pointer$x
+    if (is.null(at)) return(time_plot_hint)
+    series <- growth_series()
+    parts <- format(as.Date(round(at), origin = "1970-01-01"), "%Y-%m-%d")
+    stored <- series$stored
+    near <- which.min(abs(as.numeric(stored$x) - at))
+    if (length(near) == 1 && abs(as.numeric(stored$x[near]) - at) <= 1) {
+      parts <- c(parts, sprintf("stored %s TiB at radius %s%s", format_number(round(stored$y[near], 2)), stored$radius[near],
+                                if (stored$measure[near] == "whole reserve") " (older measure)" else ""))
+    }
+    for (kind in intersect(c("Straight line", "Exponential", "Assumed"), names(series))) {
+      value <- value_at(series[[kind]], at, max_gap = 0)
+      label <- if (kind == "Assumed") sprintf("assumed %+g%% a month", input$assumedGrowth) else tolower(kind)
+      if (!is.na(value)) parts <- c(parts, sprintf("%s %s TiB", label, format_number(round(value, 2))))
+    }
+    paste(parts, collapse = " | ")
+  })
+
+  output$growthPlot <- renderPlot({
+    g <- growth_fit()
+    plot <- ggplot() +
+      geom_hline(data = g$lines, aes(yintercept = level), colour = swarm_colours$muted, linetype = "dotted", linewidth = 0.8) +
+      geom_text(data = g$lines, aes(x = if (is.null(growth_zoom())) min(g$history$date) else as.Date(growth_zoom()[1], origin = "1970-01-01"),
+                                    y = level, label = label), colour = swarm_colours$text,
+                family = "mono", fontface = "bold", size = 5, hjust = 0, vjust = -0.5) +
+      geom_line(data = g$history[g$history$measure == "within radius", ], aes(x = date, y = stored_tib, colour = "Stored data"), linewidth = 1) +
+      geom_line(data = g$history[g$history$measure == "whole reserve", ], aes(x = date, y = stored_tib, colour = "Stored data, older measure"),
+                linewidth = 1, linetype = "dotdash")
+    if (!is.null(g$fit)) {
+      plot <- plot + geom_line(data = project_growth(g$fit, input$growthHorizon), aes(x = date, y = stored_tib, colour = fit),
+                               linetype = "dashed", linewidth = 1.1)
+    }
+    assumed_label <- sprintf("Assumed %+g%% a month", input$assumedGrowth)
+    assumed <- growth_series()$Assumed
+    if (!is.null(assumed)) {
+      plot <- plot + geom_line(data = assumed, aes(x = x, y = y, colour = assumed_label), linetype = "longdash", linewidth = 1.1)
+    }
+    plot + scale_colour_manual(values = setNames(c(swarm_colours$text, swarm_colours$muted, swarm_colours$orange, swarm_colours$mint, "#7aa6c2"),
+                                                 c("Stored data", "Stored data, older measure", "Straight line", "Exponential", assumed_label))) +
+      scale_y_continuous(labels = function(x) format_number(x)) +
+      swarm_plot_theme + swarm_readable_text +
+      labs(x = NULL, y = "Stored data (TiB)",
+           caption = paste("Dashed: fits of the last days set above, extended to the horizon (projections); long dashes: the assumed growth. Dotted: radius changes.",
+                           "Grey: days before nodes reported their reserve within radius; their whole reserve overstates the stored data.",
+                           sep = "\n")) +
+      zoom_coord(zoom_limits(growth_zoom(), growth_series()), "date")
+  }, bg = swarm_colours$bg)
+
+  output$fullnessPlot_hover <- renderText({
+    at <- input$fullnessPlot_pointer$x
+    if (is.null(at)) return(time_plot_hint)
+    history <- growth_fit()$history
+    near <- which.min(abs(as.numeric(history$date) - at))
+    if (length(near) == 0 || abs(as.numeric(history$date[near]) - at) > 1) return(format(as.Date(round(at), origin = "1970-01-01"), "%Y-%m-%d"))
+    sprintf("%s | median %.0f%% full | 90th percentile %.0f%% full | radius %s", format(history$date[near], "%Y-%m-%d"),
+            100 * history$fullness_median[near], 100 * history$fullness_p90[near], history$radius_mode[near])
+  })
+
+  output$fullnessPlot <- renderPlot({
+    history <- growth_fit()$history
+    long <- rbind(data.frame(date = history$date, share = 100 * history$fullness_median, series = "Median"),
+                  data.frame(date = history$date, share = 100 * history$fullness_p90, series = "90th percentile"))
+    ggplot(long, aes(x = date, y = share, colour = series)) +
+      geom_hline(yintercept = c(50, 100), colour = swarm_colours$muted, linetype = "dotted", linewidth = 0.8) +
+      geom_line(linewidth = 1) +
+      scale_colour_manual(values = c("Median" = swarm_colours$text, "90th percentile" = swarm_colours$orange)) +
+      swarm_plot_theme + swarm_readable_text +
+      labs(x = NULL, y = "Reserve full (%)") +
+      zoom_coord(zoom_limits(fullness_zoom(), list(data.frame(x = long$date, y = long$share))), "date")
+  }, bg = swarm_colours$bg)
+
+  ###############
+  # CONNECTIVITY
+  ###############
+  # facts about the network, shown whatever the client
+  light_network <- reactive({
+    nodes <- swarm_data()$nodes
+    full <- nodes$fullNode %in% TRUE
+    list(capable = browser_capable_nodes(nodes), full = sum(full), plain_tcp = sum(full & nodes$plain_tcp %in% TRUE),
+         both = sum(full & nodes$plain_tcp %in% TRUE & nodes$secure_websocket %in% TRUE),
+         other_address = sum(full & nodes$other_address %in% TRUE))
+  })
+  output$light_capable <- renderText(format_number(light_network()$capable))
+  output$light_capable_note <- renderText("Full nodes with a /tls/.../ws underlay")
+  output$light_places <- renderText(format_number(light_network()$capable * max(input$otherLimit, 0, na.rm = TRUE)))
+  output$light_places_note <- renderText(sprintf("%s × %s light peers", format_number(light_network()$capable),
+                                                 format_number(max(input$otherLimit, 0, na.rm = TRUE))))
+  output$light_transport_note <- renderText({
+    n <- light_network()
+    sprintf("Browsers cannot dial plain TCP, and pages served over HTTPS can only open wss connections. In swarmscan's current data, of %s full nodes, %s advertise a plain TCP underlay, %s a WSS underlay (%s both), and %s another kind. Whether the WSS underlays actually accept browser connections is not tested.",
+            format_number(n$full), format_number(n$plain_tcp), format_number(n$capable), format_number(n$both), format_number(n$other_address))
+  })
+
+  # the bootnodes' light-node-limit follows the light-node-limit until the reader changes it
+  observeEvent(input$otherLimit, {
+    if (!isTRUE(input$otherLimit >= 1)) return()
+    if (isTRUE(input$listLimit == light_last_limit())) updateNumericInput(session, "listLimit", value = input$otherLimit)
+    light_last_limit(input$otherLimit)
+  }, ignoreInit = TRUE)
+  light_last_limit <- reactiveVal(100)
+
+  # the client's numbers are entered; until then, no result is shown
+  light_inputs_set <- reactive(isTRUE(input$clientConnections >= 1) && isTRUE(input$expectedClients >= 0))
+  output$light_input_warning <- renderText({
+    n <- light_network()
+    warnings <- c(
+      if (isTRUE(input$listNodes > n$capable)) sprintf("More bootnodes than WSS full nodes; counted as %s.", format_number(n$capable)),
+      if (isTRUE(input$listNodes > 0) && isTRUE(input$startDials == 0)) "Bootnodes set but 0 bootnode peers per client: ignored.",
+      if (isTRUE(input$startDials > input$clientConnections)) "Bootnode peers per client exceed peers per client: capped.",
+      if (isTRUE(input$listNodes > 0) && isTRUE(input$startDials > input$listNodes)) "Bootnode peers per client exceed the bootnodes: capped at one per bootnode.")
+    paste(warnings, collapse = " ")
+  })
+  light_model <- reactive({
+    shiny::validate(shiny::need(light_inputs_set(), "Set peers per client and concurrent clients."))
+    shiny::validate(shiny::need(isTRUE(input$otherLimit >= 1 && input$listLimit >= 1), "light-node-limit must be 1 or more."))
+    shiny::validate(shiny::need(isTRUE(input$listNodes >= 0 && input$startDials >= 0), "Bootnodes and bootnode peers must be 0 or more."))
+    capable <- light_network()$capable
+    list_used <- input$listNodes > 0 && input$startDials > 0
+    list_nodes <- if (list_used) min(input$listNodes, capable) else 0
+    start <- if (list_used) input$startDials else 0
+    other <- max(0, capable - list_nodes)
+    cap <- client_capacity(other, input$otherLimit, input$clientConnections, list_nodes, input$listLimit, start, input$expectedClients)
+    c(list(capable = capable, other_nodes = other, list_nodes = list_nodes, start = start, list_used = list_used), cap)
+  })
+  light_state <- function(load) if (!is.finite(load) || load > 1) "over" else if (load > 0.8) "close" else "fits"
+  light_state_colour <- c(over = swarm_colours$unreachable, close = swarm_colours$error, fits = swarm_colours$mint)
+
+  output$light_verdict <- renderUI({
+    if (!light_inputs_set()) {
+      return(div(style = sprintf("border-left: 6px solid %s; background: %s; padding: 0.8em 1em; margin: 0.5em 0 1em;", swarm_colours$line, swarm_colours$surface),
+                 "Set peers per client and concurrent clients."))
+    }
+    m <- light_model()
+    clients <- input$expectedClients
+    bound <- if (!m$list_used) "" else if (m$bound_by == "list") ", bootnodes saturate first" else ", non-bootnode peers saturate first"
+    text <- switch(light_state(m$load),
+      over = if (m$most == 0) "Over capacity: there are no WSS full nodes to connect to." else
+        sprintf("Over capacity: %s concurrent clients, but the light-node limits allow at most %s (%s× over)%s. When a new light peer takes a node over its limit, bee disconnects a random light peer.",
+                format_number(clients), format_number(m$most), format_number(round(m$load, 1)), bound),
+      close = sprintf("Near capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound),
+      fits = sprintf("Within capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound))
+    div(style = sprintf("border-left: 6px solid %s; background: %s; padding: 0.8em 1em; margin: 0.5em 0 1em; font-size: 1.15rem; font-weight: bold;",
+                        light_state_colour[[light_state(m$load)]], swarm_colours$surface), text)
+  })
+  output$light_most <- renderText(if (light_inputs_set()) format_number(light_model()$most) else "–")
+  output$light_most_note <- renderText({
+    if (!light_inputs_set()) return("")
+    m <- light_model()
+    if (!m$list_used) return(sprintf("%s light peers ÷ %s peers per client; an upper bound", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere)))
+    if (m$bound_by == "list") sprintf("Limited by the bootnodes: %s light peer connections ÷ %s bootnode peers per client", format_number(m$list_nodes * input$listLimit), format_number(m$on_list)) else
+      sprintf("Limited by the other WSS full nodes: %s light peer connections ÷ %s peers per client", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere))
+  })
+  output$light_load <- renderUI({
+    if (!light_inputs_set()) return("–")
+    load <- light_model()$load
+    span(style = sprintf("color: %s;", light_state_colour[[light_state(load)]]),
+         if (!is.finite(load)) "no room" else sprintf("%s%%", format_number(round(100 * load))))
+  })
+  output$light_load_note <- renderText({
+    if (!light_inputs_set()) return("")
+    sprintf("%s concurrent clients ÷ maximum of %s", format_number(input$expectedClients), format_number(light_model()$most))
+  })
+  output$light_list_note <- renderText({
+    if (!light_inputs_set()) return("")
+    m <- light_model()
+    if (!m$list_used) return("")
+    on_list <- sprintf("Each client keeps %s peers on the %s bootnodes, which allow at most %s clients", format_number(m$on_list),
+                       format_number(m$list_nodes), format_number(m$list_clients))
+    if (m$elsewhere == 0) return(paste0(on_list, ", and no peers on other nodes."))
+    sprintf("%s, and %s peers on the other %s WSS full nodes, which allow at most %s.", on_list,
+            format_number(m$elsewhere), format_number(m$other_nodes), format_number(m$other_clients))
+  })
+
+  output$light_takes <- renderTable({
+    shiny::req(light_inputs_set())
+    m <- light_model()
+    t <- what_it_takes(m$capable, input$otherLimit, input$clientConnections, input$expectedClients, m$list_nodes, input$listLimit, m$start)
+    labels <- c(peers = "Peers per client", limit = if (m$list_used) "light-node-limit (non-bootnodes)" else "light-node-limit",
+                nodes = if (m$list_used) "WSS full nodes (non-bootnodes)" else "WSS full nodes",
+                bootnode_peers = "Bootnode peers per client", bootnode_limit = "light-node-limit on bootnodes",
+                bootnodes = "Bootnodes", other = "Other WSS full nodes", list = "Bootnodes", network = "All WSS full nodes")
+    current <- c(peers = input$clientConnections, limit = input$otherLimit, nodes = if (m$list_used) m$other_nodes else m$capable,
+                 bootnode_peers = m$on_list, bootnode_limit = input$listLimit, bootnodes = m$list_nodes)
+    needed <- vapply(seq_len(nrow(t)), function(i) {
+      key <- t$change[i]
+      if (t$status[i] == "already enough") return(sprintf("none needed (they allow %s clients)", format_number(t$value[i])))
+      if (key == "nodes" && t$status[i] == "not possible") return("no WSS full nodes")
+      if (key == "bootnodes" && t$status[i] == "not possible")
+        return(sprintf("%s (only %s WSS full nodes)", format_number(t$value[i]), format_number(m$capable)))
+      if (is.na(t$value[i]) || t$status[i] == "not possible") return("–")
+      sprintf("%s → %s", format_number(current[[key]]), format_number(t$value[i]))
+    }, "")
+    data.frame(Parameter = unname(labels[t$change]), Change = needed,
+               Result = c("enough" = "sufficient", "not enough on its own" = "not sufficient on its own", "already enough" = "already sufficient",
+                          "not possible" = "not possible")[t$status],
+               check.names = FALSE)
+  }, striped = TRUE, spacing = "s", width = "100%")
+  output$light_start_burst <- renderText({
+    if (!light_inputs_set()) return("")
+    m <- light_model()
+    if (!m$list_used) return("")
+    sprintf("If all %2$s clients start at the same time, each bootnode gets about %1$s dial attempts, against a light-node-limit of %3$s.",
+            format_number(round(start_attempts_per_node(input$expectedClients, m$list_nodes, m$on_list))), format_number(input$expectedClients),
+            format_number(input$listLimit))
+  })
+
+  output$lightPlot <- renderPlot({
+    n <- light_network()
+    set <- light_inputs_set()
+    m <- if (set) light_model() else NULL
+    list_nodes <- if (set) m$list_nodes else 0
+    start <- if (set) m$start else 0
+    limit <- max(input$otherLimit, 1, na.rm = TRUE)
+    top <- max(300, if (set) input$clientConnections * 1.5 else 0)
+    curve <- data.frame(connections = unique(round(seq(max(1, start + 1), top, length.out = 300))))
+    curve$clients <- vapply(curve$connections, function(k)
+      client_capacity(max(0, n$capable - list_nodes), limit, k, list_nodes, max(input$listLimit, 1, na.rm = TRUE), start)$most, numeric(1))
+    plot <- ggplot(curve, aes(x = connections, y = clients)) + geom_line(colour = swarm_colours$mint, linewidth = 1.2)
+    if (set) {
+      now <- data.frame(connections = input$clientConnections, clients = m$most)
+      plot <- plot +
+        geom_hline(yintercept = input$expectedClients, colour = swarm_colours$orange, linetype = "dashed", linewidth = 0.9) +
+        annotate("text", x = max(curve$connections), y = input$expectedClients, label = sprintf("%s concurrent clients", format_number(input$expectedClients)),
+                 colour = swarm_colours$orange, family = "mono", fontface = "bold", size = 5, hjust = 1, vjust = -0.6) +
+        geom_point(data = now, colour = swarm_colours$text, size = 4) +
+        geom_text(data = now, aes(label = sprintf("%s peers → %s clients", format_number(connections), format_number(clients))),
+                  colour = swarm_colours$text, family = "mono", fontface = "bold", size = 5, vjust = -0.8,
+                  hjust = if (input$clientConnections > top / 2) 1.05 else -0.05)
+    }
+    ymax <- if (set) max(input$expectedClients, m$most, 1) * 2.2 else max(curve$clients[curve$connections >= 20], 1) * 1.1
+    plot + scale_y_continuous(labels = function(x) format_number(x)) +
+      coord_cartesian(ylim = c(0, ymax)) +
+      swarm_plot_theme + swarm_readable_text +
+      labs(x = "Peers per client", y = "Max concurrent clients") +
+      theme(axis.title.x = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16))
   }, bg = swarm_colours$bg)
 
   # table of staked overlays from the chain, with each one's latest reveal in the window
@@ -1061,33 +1539,9 @@ server <- function(input, output, session) {
   # Calculate amount of storage on Swarm
   ##############
   output$storage_taken <- renderText({
-    
-    # Save reserve within radius and radius to data frame
-    nodes_data <- swarm_data()$nodes
-    storage_data <- data.frame(
-      reserveWithinRadius = nodes_data$statusSnapshot$reserveSizeWithinRadius,
-      storageradius = nodes_data$statusSnapshot$storageRadius)
-    
-    # Remove empty lines (NA or 0)
-    tmp <- storage_data[!(is.na(storage_data$reserveWithinRadius) | 
-                            is.na(storage_data$storageradius)), ]
-    clean_storage_data <- tmp[!(tmp$reserveWithinRadius == 0 | 
-                                  tmp$storageradius == 0), ]
-    
-    # Sum up all the storage data and take the average
-    bytesStored <- (clean_storage_data$reserveWithinRadius * 4096) * 
-      (2 ^ clean_storage_data$storageradius)
-    
-    # Take median value
-    shiny::validate(shiny::need(length(bytesStored) > 0,
-                                "No node reports its reserve size, so the stored data cannot be estimated."))
-    medianBytesStored <- median(bytesStored)
-    
-    # Convert to TiB (2^40 bytes)
-    medianTiBStored <- medianBytesStored / (1024 * 1024 * 1024 * 1024)
-    
-    # return value
-    paste(format_number(medianTiBStored), "TiB")
+    stored <- estimate_stored_tib(swarm_data()$nodes)
+    shiny::validate(shiny::need(!is.na(stored), "No node reports its reserve size, so the stored data cannot be estimated."))
+    paste(format_number(stored), "TiB")
   })
 }
 
