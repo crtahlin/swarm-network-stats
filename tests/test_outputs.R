@@ -81,7 +81,7 @@ all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoo
                  "price_balance", "price_balance_note", "price_balance_text",
                  "light_verdict", "light_capable", "light_capable_note", "light_places", "light_places_note", "light_transport_note",
                  "light_input_warning", "light_most", "light_most_note", "light_load", "light_load_note", "light_list_note",
-                 "light_takes_intro", "light_takes", "light_start_burst", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
+                 "light_takes", "light_start_burst", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -733,29 +733,29 @@ testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, otherLimit = 100, listNodes = 0, startDials = 0,
                     listLimit = 100, clientConnections = NA, expectedClients = NA)
   check("light tab - network facts show without client numbers", output$light_capable == "2" && output$light_places == "200")
-  check("light tab - no verdict until the client's numbers are entered", grepl("Enter your client's numbers", output$light_verdict$html) &&
+  check("light tab - no verdict until the client's numbers are entered", grepl("Set peers per client and concurrent clients", output$light_verdict$html) &&
           output$light_most == "–" && !inherits(output_or_error(output$lightPlot), "output_error"))
-  check("light tab - the transport sentence uses the data", grepl("2 also advertise secure WebSocket", output$light_transport_note, fixed = TRUE))
+  check("light tab - the transport sentence uses the data", grepl("2 of them also a WSS underlay", output$light_transport_note, fixed = TRUE))
   session$setInputs(clientConnections = 2, expectedClients = 400)
   # 2 nodes x 100 places / 2 connections = 100 clients
   check("light tab - clients at once", output$light_most == "100", output$light_most)
   verdict <- output$light_verdict$html
-  check("light tab - the verdict states it uses the reader's numbers", grepl("With your numbers (400 clients, 2 nodes each)", verdict, fixed = TRUE) &&
-          grepl("not enough room", verdict) && grepl("about 100 clients", verdict, fixed = TRUE), verdict)
+  check("light tab - the verdict states the clients and the maximum", grepl("Over capacity: 400 concurrent clients", verdict, fixed = TRUE) &&
+          grepl("at most 100", verdict, fixed = TRUE), verdict)
   check("light tab - demand is red when over capacity", grepl(swarm_colours$unreachable, output$light_load$html, fixed = TRUE))
-  check("light tab - no start-up list by default", grepl("No start-up list", output$light_list_note) && output$light_start_burst == "")
+  check("light tab - no bootnode list by default", output$light_list_note == "" && output$light_start_burst == "")
   takes <- output$light_takes
-  check("light tab - three changes without a list", lengths(regmatches(takes, gregexpr("<tr", takes))) == 4 && grepl("Result", takes, fixed = TRUE))
+  check("light tab - three changes without bootnodes", lengths(regmatches(takes, gregexpr("<tr", takes))) == 4 && grepl("Result", takes, fixed = TRUE))
   session$setInputs(listNodes = 5, startDials = 0)
   check("light tab - warnings for a list longer than the reachable nodes and a list with no connections",
-        grepl("longer than the 2 nodes", output$light_input_warning) && grepl("no connections go to it", output$light_input_warning))
+        grepl("More bootnodes than WSS full nodes", output$light_input_warning) && grepl("0 bootnode peers per client", output$light_input_warning))
   session$setInputs(listNodes = 1, startDials = 3)
-  check("light tab - a warning for more start-up connections than connections", grepl("More start-up connections than connections", output$light_input_warning))
+  check("light tab - a warning for more bootnode peers than peers", grepl("exceed peers per client", output$light_input_warning))
   session$setInputs(startDials = 1)
-  check("light tab - a start-up list adds its rows and the start-up line",
-        grepl("Starting at once", output$light_start_burst) && grepl("start-up", output$light_takes))
+  check("light tab - bootnodes add their rows and the dial-attempt line",
+        grepl("dial attempts", output$light_start_burst) && grepl("bootnode", output$light_takes))
   session$setInputs(listNodes = 0, startDials = 0, otherLimit = 100, expectedClients = 10)
-  check("light tab - few clients fit", grepl("enough room", output$light_verdict$html))
+  check("light tab - few clients fit", grepl("Within capacity", output$light_verdict$html))
 })
 fetch_swarmscan_data <- function() fixture
 

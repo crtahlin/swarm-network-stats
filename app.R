@@ -531,63 +531,54 @@ ui <-
 
     ###
     nav_panel("Connectivity",
-              div(class = "section-label", "Browser client capacity"),
-              p("How many browser clients (web pages that run a Swarm client in the browser) the network can serve at the same time. ",
-                "A client connects to some number of full nodes; how many depends on the client. Each full node accepts a limited ",
-                "number of browser and light clients; one such connection is a place."),
+              div(class = "section-label", "Browser light client capacity"),
+              p("How many browser light clients the network can serve concurrently. Browsers can only dial full nodes that advertise a WSS underlay, ",
+                "and each full node accepts up to --light-node-limit light peers (default 100)."),
               layout_column_wrap(
                 width = 1/2, fill = FALSE,
-                value_box(title = "Nodes browsers can reach", value = textOutput("light_capable"), textOutput("light_capable_note", container = p)),
-                value_box(title = "Places for browser clients", value = textOutput("light_places"), textOutput("light_places_note", container = p))
+                value_box(title = "WSS full nodes", value = textOutput("light_capable"), textOutput("light_capable_note", container = p)),
+                value_box(title = "Light peer capacity", value = textOutput("light_places"), textOutput("light_places_note", container = p))
               ),
-              div(class = "section-label", "Your client"),
-              p("Enter how your client connects and how many clients you expect; the result below uses these numbers."),
+              div(class = "section-label", "Client"),
+              p("How many peers a client keeps, and whether it dials a fixed bootnode list first, depends on the client implementation. ",
+                "Set the values for the client you want to check; the result appears once peers per client and concurrent clients are set."),
               layout_column_wrap(
                 width = 1/3, fill = FALSE,
-                numericInput("clientConnections", "Full nodes each client connects to", value = NA, min = 1, max = 5000, step = 1),
-                numericInput("expectedClients", "Clients at the same time", value = NA, min = 0, max = 1e6, step = 100),
-                numericInput("otherLimit", "Places per node (bee's light-node limit, 100 by default)", value = 100, min = 1, max = 100000, step = 100)
+                numericInput("clientConnections", "Peers per client", value = NA, min = 1, max = 5000, step = 1),
+                numericInput("expectedClients", "Concurrent clients", value = NA, min = 0, max = 1e6, step = 100),
+                numericInput("otherLimit", "light-node-limit", value = 100, min = 1, max = 100000, step = 100)
               ),
-              p("If your client first connects to a fixed list of start-up nodes, enter the list here; those nodes then fill before the ",
-                "rest of the network. Leave it at 0 if not."),
               layout_column_wrap(
                 width = 1/3, fill = FALSE,
-                numericInput("listNodes", "Nodes on the start-up list (0 = no list)", value = 0, min = 0, max = 100000, step = 1),
-                numericInput("startDials", "Of each client's connections, how many go to start-up nodes", value = 0, min = 0, max = 5000, step = 1),
-                numericInput("listLimit", "Places per start-up node", value = 100, min = 1, max = 100000, step = 100)
+                numericInput("listNodes", "Bootnodes (0 = none)", value = 0, min = 0, max = 100000, step = 1),
+                numericInput("startDials", "Bootnode peers per client", value = 0, min = 0, max = 5000, step = 1),
+                numericInput("listLimit", "light-node-limit on bootnodes", value = 100, min = 1, max = 100000, step = 100)
               ),
               textOutput("light_input_warning", container = p),
               div(class = "section-label", "Result"),
               uiOutput("light_verdict"),
               layout_column_wrap(
                 width = 1/2, fill = FALSE,
-                value_box(title = "Clients at once", value = textOutput("light_most"), textOutput("light_most_note", container = p)),
-                value_box(title = "Demand against capacity", value = uiOutput("light_load"), textOutput("light_load_note", container = p))
+                value_box(title = "Max concurrent clients", value = textOutput("light_most"), textOutput("light_most_note", container = p)),
+                value_box(title = "Load", value = uiOutput("light_load"), textOutput("light_load_note", container = p))
               ),
               textOutput("light_list_note", container = p),
               div(class = "section-label", "What it would take"),
-              textOutput("light_takes_intro", container = p),
+              p("Each row changes one parameter so the concurrent clients fit, and says whether that change alone is sufficient."),
               tableOutput("light_takes"),
               textOutput("light_start_burst", container = p),
-              div(class = "section-label", "Clients that fit, by nodes each client connects to"),
-              p("How many clients fit depends on how many nodes each one connects to. With your numbers entered, the dot marks your ",
-                "client and the dashed line the clients you expect."),
+              div(class = "section-label", "Max concurrent clients by peers per client"),
               plotOutput("lightPlot", height = "400px"),
               tags$details(
-                tags$summary("Where the numbers come from"),
+                tags$summary("Assumptions and sources"),
                 tags$ul(
-                  tags$li("bee: each full node accepts up to 100 browser and light clients by default (light-node limit; --light-node-limit since bee 2.8.2). ",
-                          "A peer that says it is not a full node counts against that limit. When a node is full, it disconnects a random light client ",
-                          "to make room. Source: bee pkg/p2p/libp2p/libp2p.go."),
+                  tags$li("bee: defaultLightNodeLimit = 100, --light-node-limit since 2.8.2. A peer with FullNode = false counts as a light peer; ",
+                          "over the limit bee disconnects a random light peer (pkg/p2p/libp2p/libp2p.go)."),
                   tags$li(textOutput("light_transport_note", inline = TRUE)),
-                  tags$li("Places = nodes browsers can reach × places per node. Clients at once = places ÷ nodes each client connects to, ",
-                          "assuming the connections spread evenly over those nodes."),
-                  tags$li("With a start-up list: each client makes the set number of its connections to start-up nodes (at most one per node, ",
-                          "spread evenly over the list) and the rest to the other nodes browsers can reach. The start-up nodes are counted among ",
-                          "the nodes browsers can reach. Clients at once is the smaller of what the list and the rest of the network hold."),
-                  tags$li("Clients at once is an upper bound: it assumes no other light clients are already connected and that every node ",
-                          "uses the places set here. What happens once nodes are full has not been measured."),
-                  tags$li("The sidebar settings do not apply to this page.")
+                  tags$li("Client peers are assumed to spread evenly over the WSS full nodes; bootnode peers evenly over the bootnodes, ",
+                          "one per node. Bootnodes are counted among the WSS full nodes."),
+                  tags$li("The maximum is an upper bound: it assumes no other light peers are already connected. What happens after nodes saturate is not modelled."),
+                  tags$li("The sidebar settings do not apply to this tab.")
                 )
               )),
 
@@ -1261,13 +1252,13 @@ server <- function(input, output, session) {
          other_address = sum(full & nodes$other_address %in% TRUE))
   })
   output$light_capable <- renderText(format_number(light_network()$capable))
-  output$light_capable_note <- renderText("Full nodes with a secure WebSocket address, the only kind a browser can open from an HTTPS page")
+  output$light_capable_note <- renderText("Full nodes with a /tls/.../ws underlay")
   output$light_places <- renderText(format_number(light_network()$capable * max(input$otherLimit, 0, na.rm = TRUE)))
-  output$light_places_note <- renderText(sprintf("%s nodes × %s places per node", format_number(light_network()$capable),
+  output$light_places_note <- renderText(sprintf("%s × light-node-limit %s", format_number(light_network()$capable),
                                                  format_number(max(input$otherLimit, 0, na.rm = TRUE))))
   output$light_transport_note <- renderText({
     n <- light_network()
-    sprintf("A browser cannot open plain TCP connections, and a page served over HTTPS can open only secure WebSocket (wss) connections. In swarmscan's current data, %s of %s full nodes advertise plain TCP addresses, %s also advertise secure WebSocket addresses, and %s advertise any other kind. Whether each of them really accepts browsers is not tested.",
+    sprintf("Browsers cannot dial plain TCP, and pages served over HTTPS can only open wss connections. In swarmscan's current data, %s of %s full nodes advertise TCP underlays, %s of them also a WSS underlay, and %s any other kind. Whether the WSS underlays actually accept browser connections is not tested.",
             format_number(n$plain_tcp), format_number(n$full), format_number(n$capable), format_number(n$other_address))
   })
 
@@ -1283,15 +1274,15 @@ server <- function(input, output, session) {
   output$light_input_warning <- renderText({
     n <- light_network()
     warnings <- c(
-      if (isTRUE(input$listNodes > n$capable)) sprintf("The start-up list is longer than the %s nodes browsers can reach; it is counted as %s.", format_number(n$capable), format_number(n$capable)),
-      if (isTRUE(input$listNodes > 0) && isTRUE(input$startDials == 0)) "A start-up list is set, but no connections go to it, so it is ignored.",
-      if (isTRUE(input$startDials > input$clientConnections)) "More start-up connections than connections per client: they are counted as all of the client's connections.")
+      if (isTRUE(input$listNodes > n$capable)) sprintf("More bootnodes than WSS full nodes; counted as %s.", format_number(n$capable)),
+      if (isTRUE(input$listNodes > 0) && isTRUE(input$startDials == 0)) "Bootnodes set but 0 bootnode peers per client: ignored.",
+      if (isTRUE(input$startDials > input$clientConnections)) "Bootnode peers per client exceed peers per client: capped.")
     paste(warnings, collapse = " ")
   })
   light_model <- reactive({
-    shiny::validate(shiny::need(light_inputs_set(), "Enter how many full nodes each client connects to and how many clients you expect."))
-    shiny::validate(shiny::need(isTRUE(input$otherLimit >= 1 && input$listLimit >= 1), "Enter 1 or more places per node."))
-    shiny::validate(shiny::need(isTRUE(input$listNodes >= 0 && input$startDials >= 0), "Enter 0 or more start-up nodes and connections."))
+    shiny::validate(shiny::need(light_inputs_set(), "Set peers per client and concurrent clients."))
+    shiny::validate(shiny::need(isTRUE(input$otherLimit >= 1 && input$listLimit >= 1), "light-node-limit must be 1 or more."))
+    shiny::validate(shiny::need(isTRUE(input$listNodes >= 0 && input$startDials >= 0), "Bootnodes and bootnode peers must be 0 or more."))
     capable <- light_network()$capable
     list_used <- input$listNodes > 0 && input$startDials > 0
     list_nodes <- if (list_used) min(input$listNodes, capable) else 0
@@ -1306,29 +1297,27 @@ server <- function(input, output, session) {
   output$light_verdict <- renderUI({
     if (!light_inputs_set()) {
       return(div(style = sprintf("border-left: 6px solid %s; background: %s; padding: 0.8em 1em; margin: 0.5em 0 1em;", swarm_colours$line, swarm_colours$surface),
-                 "Enter your client's numbers above to see how many clients fit."))
+                 "Set peers per client and concurrent clients."))
     }
     m <- light_model()
     clients <- input$expectedClients
-    given <- sprintf("With your numbers (%s clients, %s nodes each%s)", format_number(clients), format_number(input$clientConnections),
-                     if (m$list_used) sprintf(", %s of them to a start-up list of %s", format_number(m$on_list), format_number(m$list_nodes)) else "")
-    bound <- if (!m$list_used) "" else if (m$bound_by == "list") "; the start-up list fills first" else "; the rest of the network fills first"
+    bound <- if (!m$list_used) "" else if (m$bound_by == "list") ", bootnodes saturate first" else ", non-bootnode peers saturate first"
     text <- switch(light_state(m$load),
-      over = if (m$most == 0) paste0(given, ": no room, because there are no nodes browsers can reach.") else
-        sprintf("%s: not enough room. At most about %s clients fit at once%s, so the clients you expect are %s times that. Full nodes drop random clients to make room, so clients would lose connections.",
-                given, format_number(m$most), bound, format_number(round(m$load, 1))),
-      close = sprintf("%s: close to full. At most about %s clients fit at once%s; yours would use %.0f%% of that.", given, format_number(m$most), bound, 100 * m$load),
-      fits = sprintf("%s: enough room. At most about %s clients fit at once%s; yours would use %.0f%% of that.", given, format_number(m$most), bound, 100 * m$load))
+      over = if (m$most == 0) "Over capacity: there are no WSS full nodes to connect to." else
+        sprintf("Over capacity: %s concurrent clients, but the light-node limits allow at most %s (%s× over)%s. A saturated node evicts a random light peer for each new one, so clients would keep losing peers.",
+                format_number(clients), format_number(m$most), format_number(round(m$load, 1)), bound),
+      close = sprintf("Near capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound),
+      fits = sprintf("Within capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound))
     div(style = sprintf("border-left: 6px solid %s; background: %s; padding: 0.8em 1em; margin: 0.5em 0 1em; font-size: 1.15rem; font-weight: bold;",
                         light_state_colour[[light_state(m$load)]], swarm_colours$surface), text)
   })
   output$light_most <- renderText(if (light_inputs_set()) format_number(light_model()$most) else "–")
   output$light_most_note <- renderText({
-    if (!light_inputs_set()) return("Needs your client's numbers")
+    if (!light_inputs_set()) return("")
     m <- light_model()
-    if (!m$list_used) return(sprintf("%s places ÷ %s nodes per client; an upper bound", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere)))
-    if (m$bound_by == "list") sprintf("%s places on the start-up list ÷ %s start-up connections per client", format_number(m$list_nodes * input$listLimit), format_number(m$on_list)) else
-      sprintf("%s places on the other nodes ÷ %s other connections per client", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere))
+    if (!m$list_used) return(sprintf("Light peer capacity %s ÷ %s peers per client; an upper bound", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere)))
+    if (m$bound_by == "list") sprintf("Limited by the bootnodes: %s light peer connections ÷ %s bootnode peers per client", format_number(m$list_nodes * input$listLimit), format_number(m$on_list)) else
+      sprintf("Limited by the other WSS full nodes: %s light peer connections ÷ %s peers per client", format_number(m$other_nodes * input$otherLimit), format_number(m$elsewhere))
   })
   output$light_load <- renderUI({
     if (!light_inputs_set()) return("–")
@@ -1337,53 +1326,47 @@ server <- function(input, output, session) {
          if (!is.finite(load)) "no room" else sprintf("%s%%", format_number(round(100 * load))))
   })
   output$light_load_note <- renderText({
-    if (!light_inputs_set()) return("Needs your client's numbers")
-    sprintf("%s clients ÷ %s that fit. Above 100%%, nodes drop random clients.", format_number(input$expectedClients), format_number(light_model()$most))
+    if (!light_inputs_set()) return("")
+    sprintf("%s concurrent clients ÷ maximum of %s", format_number(input$expectedClients), format_number(light_model()$most))
   })
   output$light_list_note <- renderText({
     if (!light_inputs_set()) return("")
     m <- light_model()
-    if (!m$list_used) return("No start-up list: each client's connections are assumed to spread evenly over all nodes browsers can reach.")
-    sprintf("With the start-up list: each client makes %s connections to the %s start-up nodes, which hold about %s clients, and %s to the other %s nodes, which hold about %s.",
+    if (!m$list_used) return("")
+    sprintf("Each client keeps %s peers on the %s bootnodes, which allow at most %s clients, and %s peers on the other %s WSS full nodes, which allow at most %s.",
             format_number(m$on_list), format_number(m$list_nodes), format_number(m$list_clients),
             format_number(m$elsewhere), format_number(m$other_nodes), format_number(m$other_clients))
   })
 
-  output$light_takes_intro <- renderText({
-    if (!light_inputs_set()) return("Needs your client's numbers.")
-    sprintf("Changes that would let %s clients fit, each on its own, and whether each is enough once everything else is counted too:",
-            format_number(input$expectedClients))
-  })
   output$light_takes <- renderTable({
     shiny::req(light_inputs_set())
     m <- light_model()
     t <- what_it_takes(m$capable, input$otherLimit, input$clientConnections, input$expectedClients, m$list_nodes, input$listLimit, m$start)
-    labels <- c(connections = "Clients connect to fewer nodes", limit = if (m$list_used) "More places on each other node" else "More places on each node",
-                nodes = if (m$list_used) "More other nodes that browsers can reach" else "More nodes that browsers can reach",
-                start = "Fewer start-up connections per client", list_limit = "More places on each start-up node",
-                list_nodes = "A longer start-up list", other = "The rest of the network", list = "The start-up list")
+    labels <- c(connections = "Peers per client", limit = if (m$list_used) "light-node-limit (non-bootnodes)" else "light-node-limit",
+                nodes = if (m$list_used) "WSS full nodes (non-bootnodes)" else "WSS full nodes",
+                start = "Bootnode peers per client", list_limit = "light-node-limit on bootnodes",
+                list_nodes = "Bootnodes", other = "Other WSS full nodes", list = "Bootnodes")
     current <- c(connections = input$clientConnections, limit = input$otherLimit, nodes = if (m$list_used) m$other_nodes else m$capable,
                  start = m$on_list, list_limit = input$listLimit, list_nodes = m$list_nodes)
-    hows <- c(connections = "a change in the client", limit = "node operators raise --light-node-limit (bee 2.8.2 and later)",
-              nodes = "more full nodes with a secure WebSocket address", start = "a change in the client",
-              list_limit = "the operators of the start-up nodes raise --light-node-limit", list_nodes = "the client uses a longer list",
-              other = "", list = "")
     needed <- vapply(seq_len(nrow(t)), function(i) {
       key <- t$change[i]
-      if (t$status[i] == "already enough") return(sprintf("nothing: it holds about %s clients", format_number(t$value[i])))
+      if (t$status[i] == "already enough") return(sprintf("none needed (they allow %s clients)", format_number(t$value[i])))
       if (key == "list_nodes" && t$status[i] == "not possible")
-        return(sprintf("%s start-up nodes, but only %s nodes browsers can reach exist", format_number(t$value[i]), format_number(m$capable)))
-      if (is.na(t$value[i]) || t$status[i] == "not possible") return("no value works")
-      sprintf("%s %s, instead of %s", format_number(t$value[i]), t$needed[i], format_number(current[[key]]))
+        return(sprintf("%s (only %s WSS full nodes)", format_number(t$value[i]), format_number(m$capable)))
+      if (is.na(t$value[i]) || t$status[i] == "not possible") return("–")
+      sprintf("%s → %s", format_number(current[[key]]), format_number(t$value[i]))
     }, "")
-    data.frame(Change = unname(labels[t$change]), Needed = needed, How = unname(hows[t$change]), Result = t$status, check.names = FALSE)
+    data.frame(Parameter = unname(labels[t$change]), Change = needed,
+               Result = c("enough" = "sufficient", "not enough on its own" = "not sufficient on its own", "already enough" = "already sufficient",
+                          "not possible" = "not possible")[t$status],
+               check.names = FALSE)
   }, striped = TRUE, spacing = "s", width = "100%")
   output$light_start_burst <- renderText({
     if (!light_inputs_set()) return("")
     m <- light_model()
     if (!m$list_used) return("")
-    sprintf("Starting at once: if all %s clients start at about the same time, each start-up node gets about %s connection attempts, against %s places.",
-            format_number(input$expectedClients), format_number(round(start_attempts_per_node(input$expectedClients, m$list_nodes, m$start))),
+    sprintf("If all %2$s clients start at the same time, each bootnode gets about %1$s dial attempts, against a light-node-limit of %3$s.",
+            format_number(round(start_attempts_per_node(input$expectedClients, m$list_nodes, m$start))), format_number(input$expectedClients),
             format_number(input$listLimit))
   })
 
@@ -1403,10 +1386,10 @@ server <- function(input, output, session) {
       now <- data.frame(connections = input$clientConnections, clients = m$most)
       plot <- plot +
         geom_hline(yintercept = input$expectedClients, colour = swarm_colours$orange, linetype = "dashed", linewidth = 0.9) +
-        annotate("text", x = max(curve$connections), y = input$expectedClients, label = sprintf("expected: %s clients", format_number(input$expectedClients)),
+        annotate("text", x = max(curve$connections), y = input$expectedClients, label = sprintf("%s concurrent clients", format_number(input$expectedClients)),
                  colour = swarm_colours$orange, family = "mono", fontface = "bold", size = 5, hjust = 1, vjust = -0.6) +
         geom_point(data = now, colour = swarm_colours$text, size = 4) +
-        geom_text(data = now, aes(label = sprintf("your client: %s nodes → %s clients", format_number(connections), format_number(clients))),
+        geom_text(data = now, aes(label = sprintf("%s peers → %s clients", format_number(connections), format_number(clients))),
                   colour = swarm_colours$text, family = "mono", fontface = "bold", size = 5, vjust = -0.8,
                   hjust = if (input$clientConnections > top / 2) 1.05 else -0.05)
     }
@@ -1414,7 +1397,7 @@ server <- function(input, output, session) {
     plot + scale_y_continuous(labels = function(x) format_number(x)) +
       coord_cartesian(ylim = c(0, ymax)) +
       swarm_plot_theme + swarm_readable_text +
-      labs(x = "Nodes each client connects to", y = "Clients that fit at once") +
+      labs(x = "Peers per client", y = "Max concurrent clients") +
       theme(axis.title.x = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16))
   }, bg = swarm_colours$bg)
 

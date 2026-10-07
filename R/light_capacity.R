@@ -7,16 +7,16 @@
 #   nodes advertise plain TCP addresses (which browsers cannot open) and /tls/.../ws addresses, and
 #   no other transport.
 # How a client spreads its connections is not a network fact, so it is an input: connections per
-# client, and optionally a fixed list of start-up nodes each client connects to first.
+# client, and optionally a fixed list of bootnodes each client connects to first.
 
 # full nodes a browser can connect to: full nodes that advertise a secure WebSocket address.
 # Whether each of them really accepts browsers is not tested
 browser_capable_nodes <- function(nodes) sum(nodes[["fullNode"]] %in% TRUE & nodes[["secure_websocket"]] %in% TRUE)
 
 # how many clients fit before nodes fill. Each client makes `connections` connections; `start` of
-# them (at most one per node) go to a fixed start-up list of `list_nodes` nodes with `list_limit`
-# places each, and the rest spread evenly over the other `other_nodes` browser-capable nodes with
-# `other_limit` places each. The answer is the smaller of the two limits. Without a start-up list
+# them (at most one per node) go to a fixed bootnode list of `list_nodes` nodes with `list_limit`
+# light peer connections each, and the rest spread evenly over the other `other_nodes` browser-capable nodes with
+# `other_limit` light peer connections each. The answer is the smaller of the two limits. Without a bootnode list
 # (list_nodes or start = 0) all connections spread evenly. A client cannot connect to more nodes
 # than there are
 client_capacity <- function(other_nodes, other_limit, connections, list_nodes = 0, list_limit = other_limit,
@@ -33,7 +33,7 @@ client_capacity <- function(other_nodes, other_limit, connections, list_nodes = 
 }
 
 # what would let `clients` fit, each change on its own. `capable` is the number of nodes browsers can
-# reach; start-up nodes are counted among them, so the rest of the network is capable - list_nodes.
+# reach; bootnodes are counted among them, so the rest of the network is capable - list_nodes.
 # Returns one row per change: what, the value needed, and a status: "enough", "not enough on its own"
 # (it fixes one side, but the other side still holds fewer clients), "already enough" (that side
 # already holds them) or "not possible"
@@ -63,7 +63,7 @@ what_it_takes <- function(capable, limit, connections, clients, list_nodes = 0, 
       n_new <- ceiling(clients * now$elsewhere / limit)
       rows[[2]] <- row("nodes", "other nodes browsers can reach", n_new, status(holds(cap = list_nodes + n_new)))
     }
-    # the start-up list
+    # the bootnode list
     if (now$list_clients >= clients) {
       rows[[length(rows) + 1]] <- row("list", "", now$list_clients, "already enough")
     } else {
@@ -74,8 +74,8 @@ what_it_takes <- function(capable, limit, connections, clients, list_nodes = 0, 
       rows[[length(rows) + 1]] <- row("list_limit", "places per start-up node", ll_new, status(holds(list_l = ll_new)))
       # a longer list: each client makes `start` connections to it, so each node gets clients x start / nodes
       ln_new <- ceiling(clients * min(start, connections) / list_limit)
-      rows[[length(rows) + 1]] <- if (ln_new > capable) row("list_nodes", "start-up nodes", ln_new, "not possible") else
-        row("list_nodes", "start-up nodes", ln_new, status(holds(list_n = ln_new)))
+      rows[[length(rows) + 1]] <- if (ln_new > capable) row("list_nodes", "bootnodes", ln_new, "not possible") else
+        row("list_nodes", "bootnodes", ln_new, status(holds(list_n = ln_new)))
     }
   }
   do.call(rbind, rows)
