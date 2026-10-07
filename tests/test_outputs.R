@@ -93,7 +93,7 @@ all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoo
                  "light_takes", "light_start_burst", "lightPlot", "bootnode_list_note", "bootnode_concurrent", "bootnode_concurrent_note",
                  "bootnode_max_joins", "bootnode_max_joins_note", "bootnode_hosts", "bootnode_lose_host", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
-                 "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
+                 "reachability_status", "reported_radius", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
 
 for (variant in variants) {
@@ -940,6 +940,36 @@ testServer(server, {
   session$setInputs(bootnodeList = "/ip4/198.18.2.1/tcp/1634/p2p/QmX\n/ip4/198.18.2.2/tcp/1634/p2p/QmY")
   check("bootnode tab - a pasted list", grepl("2 bootnodes (peer IDs) on 2 IP addresses", output$bootnode_list_note, fixed = TRUE))
 })
+
+### Reachability: swarmscan's flag next to the self-reported one (#10); the reported radius on Data (#3)
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days)
+  output$reachability_status
+  r <- captured("reachability_status")
+  n <- fixture$nodes
+  check("reachability - counts add up to all nodes", sum(r$Freq) == nrow(n))
+  check("reachability - swarmscan's flag is counted", sum(r$Freq[r$reached == "no"]) == sum(n$unreachable %in% TRUE) &&
+          sum(r$Freq[r$reached == "no"]) > 0)
+  check("reachability - self-reported reachability is counted", sum(r$Freq[r$self == "yes"]) == sum(n$statusSnapshot$isReachable %in% TRUE))
+  # a failed snapshot (error set, fields zeroed) is not a self-report
+  failed <- !is.na(n$statusSnapshot$error) & nzchar(n$statusSnapshot$error)
+  check("reachability - a failed snapshot counts as unknown, not as unreachable",
+        sum(r$Freq[r$self == "no"]) == sum(n$statusSnapshot$isReachable %in% FALSE & !failed) && sum(failed & n$statusSnapshot$isReachable %in% FALSE) > 0,
+        paste(sum(r$Freq[r$self == "no"]), sum(failed)))
+  session$setInputs(onlyFullNodes = TRUE)
+  output$reachability_status
+  check("reachability - with only full nodes, every node was reached", all(captured("reachability_status")$reached == "yes"))
+  check("data - the committed depth the nodes report", output$reported_radius == "9")
+})
+# a dump without swarmscan's unreachable flag shows "unknown", not "yes"
+saved_cache <- swarm_cache$data
+swarm_cache$data$nodes$unreachable <- NULL
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days)
+  output$reachability_status
+  check("reachability - without the unreachable flag, reached is unknown", all(captured("reachability_status")$reached == "unknown"))
+})
+swarm_cache$data <- saved_cache
 
 ### the sidebar shows each setting only on the tabs it applies to (#69)
 # tabs that hide the radius keep working with an invalid one typed on another tab
