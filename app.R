@@ -163,7 +163,14 @@ prepare_nodes_data <- function(swarmscan_data) {
     nodes_data$location_source[i] <- "same IP"
   }
   
-  # the underlay addresses were only needed for borrowing locations; dropping them halves the cache
+  # whether the node offers a secure WebSocket address (/tls/.../ws), which browser clients need
+  nodes_data$secure_websocket <- vapply(underlays, function(u) {
+    if (is.null(u) || NROW(u) == 0) return(FALSE)
+    any(grepl("/tls/", u$address, fixed = TRUE) & grepl("/ws", u$address, fixed = TRUE))
+  }, logical(1))
+
+  # the underlay addresses were only needed for borrowing locations and the flag above; dropping
+  # them halves the cache
   nodes_data[["underlays"]] <- NULL
 
   nodes_data
@@ -243,6 +250,8 @@ source("R/storage_history.R", local = TRUE)
 storage_history_data <- read_storage_history()
 # zoom and pointer read-outs for the plots against time
 source("R/time_plots.R", local = TRUE)
+# the Connectivity tab: light-client capacity
+source("R/light_capacity.R", local = TRUE)
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -513,6 +522,35 @@ ui <-
               plotOutput("fullnessPlot", height = "420px",
                          brush = brushOpts("fullnessPlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
                          dblclick = "fullnessPlot_dblclick", hover = hoverOpts("fullnessPlot_pointer", delay = 80, delayType = "throttle"))),
+
+    ###
+    nav_panel("Connectivity",
+              div(class = "section-label", "Ultra-light client capacity"),
+              p("How many browser (ultra-light) clients the network can hold at once. Every full node accepts up to a set number ",
+                "of light peers (bee's light-node limit, 100 by default), and ultra-light clients count against the same limit. ",
+                "Browser clients can only connect to full nodes that offer a secure WebSocket address (bee 2.8.2 and later). ",
+                "When the limit is reached, bee disconnects a random light peer to make room, so too many clients cause churn, ",
+                "not refused connections. A client needs one slot on each full node it connects to; the in-browser client weeb-3 ",
+                "held about 200 connections per tab when measured in August 2026. The calculation assumes clients spread evenly over ",
+                "the full nodes, which is a simplification: kademlia prefers some peers over others, so some nodes fill first."),
+              layout_column_wrap(
+                width = 1/3, fill = FALSE,
+                numericInput("clientConnections", "Connections per client", value = 200, min = 1, max = 2000, step = 1),
+                numericInput("lightNodeLimit", "Light-node limit per full node", value = 100, min = 1, max = 10000, step = 1),
+                radioButtons("acceptingRule", "Full nodes that accept clients", choices = light_node_rules, selected = "websocket"),
+                numericInput("edgeNodes", "Extra edge nodes we run", value = 0, min = 0, max = 1000, step = 1),
+                numericInput("edgeNodeLimit", "Light-node limit on the edge nodes", value = 1000, min = 1, max = 100000, step = 100),
+                numericInput("expectedClients", "Expected concurrent clients", value = 4000, min = 0, max = 1e6, step = 100)
+              ),
+              layout_column_wrap(
+                width = 1/4, fill = FALSE,
+                value_box(title = "Full nodes accepting", value = textOutput("light_accepting"), p("Under the rule chosen above")),
+                value_box(title = "Light-peer slots", value = textOutput("light_slots"), p("On those nodes and the edge nodes")),
+                value_box(title = "Clients at once", value = textOutput("light_max_clients"), p("Slots divided by connections per client")),
+                value_box(title = "Slots in use", value = textOutput("light_utilisation"), p("With the expected clients; above 100% means churn"))
+              ),
+              textOutput("light_note", container = p),
+              plotOutput("lightPlot", height = "420px")),
 
     # ###
     # nav_panel("Nbhood counts",
@@ -1171,6 +1209,56 @@ server <- function(input, output, session) {
       swarm_plot_theme + swarm_readable_text +
       labs(x = NULL, y = "Reserve full (%)") +
       zoom_coord(zoom_limits(fullness_zoom(), list(data.frame(x = long$date, y = long$share))), "date")
+  }, bg = swarm_colours$bg)
+
+  ###############
+  # CONNECTIVITY
+  ###############
+  light_model <- reactive({
+    shiny::validate(shiny::need(isTRUE(input$clientConnections >= 1), "Enter 1 or more connections per client."))
+    shiny::validate(shiny::need(isTRUE(input$lightNodeLimit >= 1), "Enter a light-node limit of 1 or more."))
+    shiny::validate(shiny::need(isTRUE(input$edgeNodes >= 0 && input$edgeNodeLimit >= 1), "Enter 0 or more edge nodes, with a limit of 1 or more."))
+    shiny::validate(shiny::need(isTRUE(input$expectedClients >= 0), "Enter 0 or more expected clients."))
+    accepting <- accepting_full_nodes(swarm_data()$nodes, input$acceptingRule)
+    c(list(accepting = accepting),
+      light_capacity(accepting, input$lightNodeLimit, input$clientConnections, input$edgeNodes, input$edgeNodeLimit, input$expectedClients))
+  })
+  output$light_accepting <- renderText(format_number(light_model()$accepting))
+  output$light_slots <- renderText(format_number(light_model()$slots))
+  output$light_max_clients <- renderText(format_number(light_model()$max_clients))
+  output$light_utilisation <- renderText({
+    u <- light_model()$utilisation
+    if (is.na(u)) "no slots" else sprintf("%s%%", format_number(round(100 * u)))
+  })
+  output$light_note <- renderText({
+    m <- light_model()
+    text <- sprintf("Each client takes one slot on each of the %s full nodes it connects to.", format_number(m$per_client))
+    if (m$per_client < input$clientConnections) {
+      text <- paste(text, sprintf("A client asks for %s connections, but there are only %s nodes to connect to.",
+                                  format_number(input$clientConnections), format_number(m$per_client)))
+    }
+    if (isTRUE(m$utilisation > 1)) {
+      text <- paste(text, sprintf("%s expected clients need %s slots, %s more than there are: bee would keep disconnecting random light peers, so clients would churn.",
+                                  format_number(input$expectedClients), format_number(input$expectedClients * m$per_client),
+                                  format_number(input$expectedClients * m$per_client - m$slots)))
+    }
+    text
+  })
+  output$lightPlot <- renderPlot({
+    m <- light_model()
+    shiny::validate(shiny::need(m$slots > 0, "There are no light-peer slots with these settings."))
+    top <- max(2 * input$expectedClients, 1.5 * m$max_clients, 10)
+    curve <- data.frame(clients = seq(0, top, length.out = 200))
+    curve$utilisation <- 100 * curve$clients * m$per_client / m$slots
+    ggplot(curve, aes(x = clients, y = utilisation)) +
+      geom_hline(yintercept = 100, colour = swarm_colours$unreachable, linetype = "dotted", linewidth = 0.8) +
+      geom_vline(xintercept = input$expectedClients, colour = swarm_colours$muted, linetype = "dashed") +
+      geom_line(colour = swarm_colours$mint, linewidth = 1.2) +
+      scale_x_continuous(labels = function(x) format_number(x)) +
+      swarm_plot_theme + swarm_readable_text +
+      labs(x = "Concurrent clients", y = "Light-peer slots in use (%)",
+           caption = "Dashed: the expected clients. Dotted: all slots in use; above it bee disconnects random light peers.") +
+      theme(axis.title.x = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16))
   }, bg = swarm_colours$bg)
 
   # table of staked overlays from the chain, with each one's latest reveal in the window

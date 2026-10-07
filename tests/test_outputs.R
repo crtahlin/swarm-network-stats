@@ -78,7 +78,8 @@ expected_max_radius <- function(bits, minimum) {
 
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
-                 "price_balance", "price_balance_note", "price_balance_text", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
+                 "price_balance", "price_balance_note", "price_balance_text",
+                 "light_accepting", "light_slots", "light_max_clients", "light_utilisation", "light_note", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -103,7 +104,9 @@ for (variant in variants) {
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
-                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0)
+                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                        clientConnections = 200, lightNodeLimit = 100, acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000,
+                        expectedClients = 4000)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -642,7 +645,9 @@ check("pointer - outside a series gives NA", is.na(value_at(pts, as.numeric(as.D
 storage_history_data <- synthetic
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
-                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0)
+                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                        clientConnections = 200, lightNodeLimit = 100, acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000,
+                        expectedClients = 4000)
   summary <- output$growth_summary
   check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
           grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date", summary, fixed = TRUE), summary)
@@ -682,6 +687,40 @@ testServer(server, {
   check("growth tab - a fit window under 7 days shows a message", grepl("Fit over 7 days", output_or_error(output$growth_summary)))
 })
 storage_history_data <- read_storage_history(tempfile())
+
+### Connectivity: light-client capacity (R/light_capacity.R)
+full_nodes <- prepared$fullNode %in% TRUE
+check("light - full nodes reached by swarmscan", accepting_full_nodes(prepared, "reached") == sum(full_nodes & !(prepared$unreachable %in% TRUE)))
+check("light - full nodes that report themselves reachable",
+      accepting_full_nodes(prepared, "reachable") == sum(full_nodes & prepared$statusSnapshot$isReachable %in% TRUE))
+# the sample has no secure WebSocket addresses (its underlays were reduced), so two full nodes get one
+with_wss <- fixture
+wss_rows <- which(with_wss$nodes$fullNode %in% TRUE)[1:2]
+for (i in wss_rows) with_wss$nodes$underlays[[i]] <- rbind(with_wss$nodes$underlays[[i]],
+  data.frame(address = "/ip4/198.18.0.9/tcp/1635/tls/sni/198-18-0-9.k2k4.libp2p.direct/ws/p2p/16Uiu2"))
+check("light - only full nodes offering a secure WebSocket address count for browsers",
+      accepting_full_nodes(prepare_nodes_data(with_wss), "websocket") == 2 && accepting_full_nodes(prepared, "websocket") == 0)
+# by hand: 1,671 nodes x 100 slots = 167,100; at 200 connections that is 835 clients (the example in issue #44)
+cap <- light_capacity(1671, 100, 200, clients = 4000)
+check("light - slots and clients at once", cap$slots == 167100 && cap$per_client == 200 && cap$max_clients == 835)
+check("light - 4,000 clients use 479% of the slots", isTRUE(all.equal(cap$utilisation, 4000 * 200 / 167100)))
+check("light - edge nodes add their own slots", light_capacity(1671, 100, 200, edge_nodes = 10, edge_limit = 1000)$slots == 177100)
+check("light - a client cannot connect to more nodes than exist", light_capacity(50, 100, 200)$per_client == 50 &&
+        light_capacity(50, 100, 200)$max_clients == 100)
+check("light - no nodes means no slots", light_capacity(0, 100, 200, clients = 10)$max_clients == 0 && is.na(light_capacity(0, 100, 200)$utilisation))
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, clientConnections = 200, lightNodeLimit = 100,
+                    acceptingRule = "websocket", edgeNodes = 0, edgeNodeLimit = 1000, expectedClients = 4000)
+  accepting <- accepting_full_nodes(swarm_cache$data$nodes, "websocket")
+  expected <- light_capacity(accepting, 100, 200, clients = 4000)
+  check("light tab - slots and clients at once", output$light_slots == format_number(expected$slots) &&
+          output$light_max_clients == format_number(expected$max_clients))
+  check("light tab - churn is explained when slots run out", grepl("churn", output$light_note) == isTRUE(expected$utilisation > 1), output$light_note)
+  session$setInputs(edgeNodes = 20, edgeNodeLimit = 1000)
+  check("light tab - edge nodes add slots", output$light_slots == format_number(light_capacity(accepting, 100, 200, 20, 1000)$slots))
+  session$setInputs(clientConnections = 0)
+  check("light tab - 0 connections shows a message", grepl("Enter 1 or more connections", output_or_error(output$light_slots)))
+})
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)
