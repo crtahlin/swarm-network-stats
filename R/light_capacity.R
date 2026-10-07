@@ -1,69 +1,85 @@
-### how many browser tabs running weeb-3 the network can hold at once
-# Verified facts the model is built on (bee and weeb-3 sources, read 2026-10-07):
+### how many browser clients the network's full nodes can hold at once
+# Network facts (verified 2026-10-07):
 # - bee: each full node takes up to light-node-limit light clients (defaultLightNodeLimit = 100,
 #   --light-node-limit since bee 2.8.2). A peer that says it is not a full node counts as a light
 #   client; over the limit bee disconnects a random light client (pkg/p2p/libp2p/libp2p.go).
-# - weeb-3 says it is not a full node in the handshake (src/handlers.rs, full_node: false).
-# - weeb-3 aims for 200 connections per browser (CONNECTION_BUILDUP_LIMIT, src/accounting.rs) and lowers
-#   that target by a fifth for every 100 connections it loses, down to 30.
-# - weeb-3 starts each browser on a random 160 (INITIAL_BOOTNODE_BURST) of a hard-coded list of 319
-#   nodes (MAINNET_BOOTNODES, src/network_profile.rs, commit 243eff5). A page can pass its own list
-#   instead (bootstrapNodes in the start options, src/library.rs).
-# - weeb-3 runs in a SharedWorker: all its tabs of one site in one browser share one node and one set
-#   of connections (README.md, "Connected tabs share that node's peer identity, connections ..."),
-#   so the unit here is a browser, not a tab.
-# - weeb-3 does not close idle connections (idle timeout 36,000,000 s, src/lib.rs). It closes
-#   connections that fail (dial, handshake, ping, no pricing within 20 s), duplicates, and some after
-#   a failed payment refresh; when a node drops it, it dials the same node again after a few seconds
-#   (src/lib.rs, from reading the code). So start-up nodes stay in use and the start-up list fills first.
-# - A page's own bootstrapNodes list is used in order, first 160 entries (src/library.rs,
-#   src/worker_runtime.rs): the page has to shuffle it for each browser to spread the load.
-# What happens once nodes are full (bee drops clients, weeb-3 dials the same nodes again and lowers
-# its target) has not been measured; the model stops at the point where they fill.
+# - Browsers can only open secure WebSocket connections to full nodes: in swarmscan's dump, full
+#   nodes advertise plain TCP addresses (which browsers cannot open) and /tls/.../ws addresses, and
+#   no other transport.
+# How a client spreads its connections is not a network fact, so it is an input: connections per
+# client, and optionally a fixed list of start-up nodes each client connects to first.
 
-weeb3_connections <- 200
-weeb3_start_dials <- 160
-weeb3_start_list <- 319
-# of the 319 built-in nodes, those swarmscan listed as browser-capable full nodes on 2026-10-07
-# (matched by peer ID); they are part of the browser-capable count, so the rest of the network is
-# the browser-capable nodes less these
-weeb3_list_in_data <- 303
-
-# the number of browser-capable full nodes: full nodes that advertise a secure WebSocket address
-# (/tls/.../ws), which browsers need. Whether each of them really accepts browsers is not tested
+# full nodes a browser can connect to: full nodes that advertise a secure WebSocket address.
+# Whether each of them really accepts browsers is not tested
 browser_capable_nodes <- function(nodes) sum(nodes[["fullNode"]] %in% TRUE & nodes[["secure_websocket"]] %in% TRUE)
 
-# how many tabs fit before nodes fill. Each tab puts min(start_dials, list_nodes) connections on
-# the start-up list and the rest of its `connections` on the other browser-capable nodes, assumed
-# spread evenly over them. The answer is the smaller of the two limits
-tab_capacity <- function(list_nodes, list_limit, other_nodes, other_limit, connections = weeb3_connections,
-                         start_dials = weeb3_start_dials, tabs = 0) {
-  on_list <- min(start_dials, list_nodes, connections)
-  elsewhere <- max(0, connections - on_list)
-  list_tabs <- if (on_list > 0) floor(list_nodes * list_limit / on_list) else Inf
-  other_tabs <- if (elsewhere > 0) floor(other_nodes * other_limit / elsewhere) else Inf
-  most <- min(list_tabs, other_tabs)
-  list(on_list = on_list, elsewhere = elsewhere, list_tabs = list_tabs, other_tabs = other_tabs, most = most,
-       load = if (is.finite(most) && most > 0) tabs / most else if (tabs > 0) Inf else 0,
-       bound_by = if (list_tabs <= other_tabs) "list" else "network")
+# how many clients fit before nodes fill. Each client makes `connections` connections; `start` of
+# them (at most one per node) go to a fixed start-up list of `list_nodes` nodes with `list_limit`
+# places each, and the rest spread evenly over the other `other_nodes` browser-capable nodes with
+# `other_limit` places each. The answer is the smaller of the two limits. Without a start-up list
+# (list_nodes or start = 0) all connections spread evenly. A client cannot connect to more nodes
+# than there are
+client_capacity <- function(other_nodes, other_limit, connections, list_nodes = 0, list_limit = other_limit,
+                            start = 0, clients = 0) {
+  on_list <- min(start, list_nodes, connections)
+  elsewhere <- min(connections - on_list, other_nodes)
+  list_clients <- if (on_list > 0) floor(list_nodes * list_limit / on_list) else Inf
+  other_clients <- if (elsewhere > 0) floor(other_nodes * other_limit / elsewhere) else Inf
+  most <- min(list_clients, other_clients)
+  if (!is.finite(most)) most <- 0
+  list(on_list = on_list, elsewhere = elsewhere, list_clients = list_clients, other_clients = other_clients, most = most,
+       load = if (most > 0) clients / most else if (clients > 0) Inf else 0,
+       bound_by = if (list_clients <= other_clients) "list" else "network")
 }
 
-# what would let `tabs` browsers fit, each change on its own, and whether it is enough once the rest
-# of the network is counted too: list_nodes and list_limit only change the start-up list; fewer
-# start-up connections moves the rest of each browser's connections to the rest of the network
-what_it_takes <- function(list_nodes, list_limit, other_nodes, other_limit, tabs,
-                          connections = weeb3_connections, start_dials = weeb3_start_dials) {
-  on_list <- min(start_dials, list_nodes)
-  more_nodes <- if (tabs * on_list <= list_nodes * list_limit) list_nodes else max(start_dials + 1, ceiling(tabs * start_dials / list_limit))
-  more_places <- ceiling(tabs * on_list / list_nodes)
-  fewer_dials <- if (tabs > 0) floor(list_nodes * list_limit / tabs) else NA_real_
-  fits <- function(n, l, d) tab_capacity(n, l, other_nodes, other_limit, connections, d)$most >= tabs
-  list(list_nodes = more_nodes, list_limit = more_places, start_dials = fewer_dials,
-       list_nodes_enough = fits(more_nodes, list_limit, start_dials),
-       list_limit_enough = fits(list_nodes, more_places, start_dials),
-       start_dials_enough = !is.na(fewer_dials) && fewer_dials >= 1 && fits(list_nodes, list_limit, fewer_dials),
-       start_dials_network = tab_capacity(list_nodes, list_limit, other_nodes, other_limit, connections, max(fewer_dials, 1))$other_tabs)
+# what would let `clients` fit, each change on its own. `capable` is the number of nodes browsers can
+# reach; start-up nodes are counted among them, so the rest of the network is capable - list_nodes.
+# Returns one row per change: what, the value needed, and a status: "enough", "not enough on its own"
+# (it fixes one side, but the other side still holds fewer clients), "already enough" (that side
+# already holds them) or "not possible"
+what_it_takes <- function(capable, limit, connections, clients, list_nodes = 0, list_limit = limit, start = 0) {
+  holds <- function(list_n = list_nodes, list_l = list_limit, s = start, l = limit, c = connections, cap = capable)
+    client_capacity(max(0, cap - list_n), l, c, list_n, list_l, s)$most
+  now <- client_capacity(max(0, capable - list_nodes), limit, connections, list_nodes, list_limit, start)
+  status <- function(most) if (most >= clients) "enough" else "not enough on its own"
+  row <- function(change, needed, value, status) data.frame(change = change, needed = needed, value = value, status = status)
+  other <- max(0, capable - list_nodes)
+  rows <- list()
+  if (now$on_list == 0) {
+    c_new <- floor(capable * limit / clients)
+    rows[[1]] <- if (c_new >= 1) row("connections", "nodes per client", c_new, status(holds(c = c_new))) else
+      row("connections", "nodes per client", NA, "not possible")
+    l_new <- ceiling(clients * now$elsewhere / capable)
+    rows[[2]] <- row("limit", "places per node", l_new, status(holds(l = l_new)))
+    n_new <- ceiling(clients * now$elsewhere / limit)
+    rows[[3]] <- row("nodes", "nodes browsers can reach", n_new, status(holds(cap = n_new)))
+  } else {
+    # the rest of the network
+    if (now$other_clients >= clients) {
+      rows[[1]] <- row("other", "", now$other_clients, "already enough")
+    } else {
+      l_new <- ceiling(clients * now$elsewhere / other)
+      rows[[1]] <- row("limit", "places per other node", l_new, status(holds(l = l_new)))
+      n_new <- ceiling(clients * now$elsewhere / limit)
+      rows[[2]] <- row("nodes", "other nodes browsers can reach", n_new, status(holds(cap = list_nodes + n_new)))
+    }
+    # the start-up list
+    if (now$list_clients >= clients) {
+      rows[[length(rows) + 1]] <- row("list", "", now$list_clients, "already enough")
+    } else {
+      s_new <- floor(list_nodes * list_limit / clients)
+      rows[[length(rows) + 1]] <- if (s_new >= 1) row("start", "start-up connections per client", s_new, status(holds(s = s_new))) else
+        row("start", "start-up connections per client", 0, "not possible")
+      ll_new <- ceiling(clients * now$on_list / list_nodes)
+      rows[[length(rows) + 1]] <- row("list_limit", "places per start-up node", ll_new, status(holds(list_l = ll_new)))
+      # a longer list: each client makes `start` connections to it, so each node gets clients x start / nodes
+      ln_new <- ceiling(clients * min(start, connections) / list_limit)
+      rows[[length(rows) + 1]] <- if (ln_new > capable) row("list_nodes", "start-up nodes", ln_new, "not possible") else
+        row("list_nodes", "start-up nodes", ln_new, status(holds(list_n = ln_new)))
+    }
+  }
+  do.call(rbind, rows)
 }
 
-# start-up burst: if `tabs` browsers start together, each listed node gets this many connection attempts
-start_attempts_per_node <- function(tabs, list_nodes, start_dials = weeb3_start_dials) tabs * min(start_dials, list_nodes) / list_nodes
+# if all clients start at about the same time, each start-up node gets this many connection attempts
+start_attempts_per_node <- function(clients, list_nodes, start) if (list_nodes > 0) clients * min(start, list_nodes) / list_nodes else 0
