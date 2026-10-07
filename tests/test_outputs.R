@@ -93,7 +93,7 @@ all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoo
                  "light_takes", "light_start_burst", "lightPlot", "bootnode_list_note", "bootnode_concurrent", "bootnode_concurrent_note",
                  "bootnode_max_joins", "bootnode_max_joins_note", "bootnode_hosts", "bootnode_lose_host", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
-                 "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
+                 "reachability_status", "reported_radius", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
 
 for (variant in variants) {
@@ -939,6 +939,22 @@ testServer(server, {
   check("bootnode tab - an empty pasted list asks for addresses", grepl("Paste one or more multiaddresses", output_or_error(output$bootnode_list_note)))
   session$setInputs(bootnodeList = "/ip4/198.18.2.1/tcp/1634/p2p/QmX\n/ip4/198.18.2.2/tcp/1634/p2p/QmY")
   check("bootnode tab - a pasted list", grepl("2 bootnodes (peer IDs) on 2 IP addresses", output$bootnode_list_note, fixed = TRUE))
+})
+
+### Reachability: swarmscan's flag next to the self-reported one (#10); the reported radius on Data (#3)
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days)
+  output$reachability_status
+  r <- captured("reachability_status")
+  n <- fixture$nodes
+  check("reachability - counts add up to all nodes", sum(r$Freq) == nrow(n))
+  check("reachability - swarmscan's flag is counted", sum(r$Freq[r$reached == "no"]) == sum(n$unreachable %in% TRUE) &&
+          sum(r$Freq[r$reached == "no"]) > 0)
+  check("reachability - self-reported reachability is counted", sum(r$Freq[r$self == "yes"]) == sum(n$statusSnapshot$isReachable %in% TRUE))
+  session$setInputs(onlyFullNodes = TRUE)
+  output$reachability_status
+  check("reachability - with only full nodes, every node was reached", all(captured("reachability_status")$reached == "yes"))
+  check("data - the radius the nodes report", output$reported_radius == format_number(typical_storage_radius(swarm_cache$data$nodes)))
 })
 
 ### the sidebar shows each setting only on the tabs it applies to (#69)
