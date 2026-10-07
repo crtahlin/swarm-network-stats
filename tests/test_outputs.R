@@ -78,7 +78,10 @@ expected_max_radius <- function(bits, minimum) {
 
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
-                 "price_balance", "price_balance_note", "price_balance_text", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
+                 "price_balance", "price_balance_note", "price_balance_text",
+                 "light_verdict", "light_capable", "light_capable_note", "light_places", "light_places_note", "light_transport_note",
+                 "light_input_warning", "light_most", "light_most_note", "light_load", "light_load_note", "light_list_note",
+                 "light_takes", "light_start_burst", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -103,7 +106,9 @@ for (variant in variants) {
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
-                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0)
+                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                        clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
+                        listNodes = 0, expectedClients = 4000)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -648,7 +653,9 @@ check("pointer - outside a series gives NA", is.na(value_at(pts, as.numeric(as.D
 storage_history_data <- synthetic
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
-                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0)
+                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                        clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
+                        listNodes = 0, expectedClients = 4000)
   summary <- output$growth_summary
   check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
           grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date (not reached)", summary, fixed = TRUE) &&
@@ -696,6 +703,102 @@ testServer(server, {
   check("growth tab - a fit window under 7 days shows a message", grepl("Fit over 7 days", output_or_error(output$growth_summary)))
 })
 storage_history_data <- read_storage_history(tempfile())
+
+### Connectivity: browser client capacity (R/light_capacity.R)
+# the sample has no secure WebSocket addresses (its underlays were reduced), so two full nodes get one
+with_wss <- fixture
+wss_rows <- which(with_wss$nodes$fullNode %in% TRUE)[1:2]
+for (i in wss_rows) with_wss$nodes$underlays[[i]] <- rbind(with_wss$nodes$underlays[[i]],
+  data.frame(address = "/ip4/198.18.0.9/tcp/1635/tls/sni/198-18-0-9.k2k4.libp2p.direct/ws/p2p/16Uiu2"))
+# address kinds: WSS, plain TCP (including DNS names starting with "ws") and anything else
+kinds <- fixture
+kinds$nodes <- kinds$nodes[1:3, ]
+kinds$nodes$fullNode <- TRUE
+kinds$nodes$underlays <- list(data.frame(address = "/ip4/198.18.0.1/tcp/1635/tls/sni/x.libp2p.direct/ws/p2p/A"),
+                              data.frame(address = "/dns4/ws.example.org/tcp/1634/p2p/B"),
+                              data.frame(address = "/ip4/198.18.0.3/udp/1634/quic-v1/p2p/C"))
+kp <- prepare_nodes_data(kinds)
+check("light - address kinds: WSS, plain TCP with a ws-like DNS name, and other",
+      identical(kp$secure_websocket, c(TRUE, FALSE, FALSE)) && identical(kp$plain_tcp, c(FALSE, TRUE, FALSE)) &&
+        identical(kp$other_address, c(FALSE, FALSE, TRUE)))
+check("light - only full nodes offering a secure WebSocket address are counted",
+      browser_capable_nodes(prepare_nodes_data(with_wss)) == 2 && browser_capable_nodes(prepared) == 0)
+# without a start-up list: 2,493 nodes x 100 places / 200 connections = 1,246 clients
+cap <- client_capacity(2493, 100, 200, clients = 4000)
+check("light - even spread", cap$on_list == 0 && cap$elsewhere == 200 && cap$most == 1246 && cap$bound_by == "network")
+check("light - demand against capacity", isTRUE(all.equal(cap$load, 4000 / 1246)))
+check("light - a client cannot connect to more nodes than there are", client_capacity(50, 100, 200)$elsewhere == 50 &&
+        client_capacity(50, 100, 200)$most == 100)
+check("light - no nodes, no room", client_capacity(0, 100, 200, clients = 10)$most == 0 && !is.finite(client_capacity(0, 100, 200, clients = 10)$load))
+# with a start-up list of 300 nodes taking 150 of 200 connections: the list holds 300 x 100 / 150 = 200 clients
+with_list <- client_capacity(2193, 100, 200, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150, clients = 4000)
+check("light - a start-up list fills first", with_list$on_list == 150 && with_list$elsewhere == 50 && with_list$list_clients == 200 &&
+        with_list$other_clients == floor(2193 * 100 / 50) && with_list$most == 200 && with_list$bound_by == "list")
+# what it would take, without bootnodes: 2,493 x 100 / 4,000 = 62 peers; 4,000 x 200 / 2,493 = 321 light-node-limit; 8,000 nodes
+t <- what_it_takes(2493, 100, 200, 4000)
+check("light - what it takes without bootnodes", identical(t$change, c("peers", "limit", "nodes")) &&
+        identical(t$value, c(62, 321, 8000)) && all(t$status == "enough"), paste(t$value, t$status, collapse = " "))
+check("light - clients that already fit need no change", identical(what_it_takes(2493, 100, 200, 10)$status, "already enough") &&
+        identical(what_it_takes(2493, 100, 200, 0)$status, "already enough"))
+# more peers per client than nodes: 50 nodes hold 5,000 light peers; 400 clients x 200 peers need 800 nodes
+check("light - nodes needed use the uncapped peers per client", what_it_takes(50, 100, 200, 400)$value[3] == 800 &&
+        client_capacity(800, 100, 200)$most == 400)
+# with 300 bootnodes taking 150 of 200 peers: the other 2,193 nodes (50 peers) hold 4,386, already enough; the bootnodes
+# hold 200: 7 bootnode peers (not enough: the other 193 hold 1,136), 2,000 light-node-limit (enough), 6,000 bootnodes (not possible)
+tl <- what_it_takes(2493, 100, 200, 4000, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150)
+check("light - with bootnodes: the other nodes are already enough", tl$status[tl$change == "other"] == "already enough" &&
+        tl$value[tl$change == "other"] == 4386)
+check("light - with bootnodes: fewer bootnode peers is not enough on its own",
+      tl$value[tl$change == "bootnode_peers"] == 7 && tl$status[tl$change == "bootnode_peers"] == "not enough on its own")
+check("light - with bootnodes: a higher light-node-limit on them is enough",
+      tl$value[tl$change == "bootnode_limit"] == 2000 && tl$status[tl$change == "bootnode_limit"] == "enough")
+check("light - with bootnodes: more bootnodes than WSS full nodes is not possible",
+      tl$value[tl$change == "bootnodes"] == 6000 && tl$status[tl$change == "bootnodes"] == "not possible")
+# all peers on the bootnodes: no row for the other nodes, so no "Inf"
+all_on_list <- what_it_takes(2493, 100, 150, 4000, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150)
+check("light - with every peer on the bootnodes there is no row for the other nodes", !("other" %in% all_on_list$change) &&
+        all(is.finite(all_on_list$value)))
+check("light - dial attempts use the bootnode peers each client keeps", start_attempts_per_node(4000, 300, 150) == 2000)
+check("light - with every WSS full node a bootnode there is no row for the other nodes",
+      !("other" %in% what_it_takes(300, 100, 200, 4000, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150)$change))
+check("light - no WSS full nodes is not possible", identical(what_it_takes(0, 100, 200, 10)$status, "not possible"))
+storage_history_data <- read_storage_history(tempfile())
+fetch_swarmscan_data <- function() with_wss
+swarm_cache$data <- NULL; swarm_cache$version <- 0; swarm_cache$next_attempt <- -Inf
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, otherLimit = 100, listNodes = 0, startDials = 0,
+                    listLimit = 100, clientConnections = NA, expectedClients = NA)
+  check("light tab - network facts show without client numbers", output$light_capable == "2" && output$light_places == "200")
+  check("light tab - no verdict until the client's numbers are entered", grepl("Set peers per client and concurrent clients", output$light_verdict$html) &&
+          output$light_most == "–" && !inherits(output_or_error(output$lightPlot), "output_error"))
+  check("light tab - the transport sentence uses the data", grepl("2 a WSS underlay", output$light_transport_note, fixed = TRUE))
+  session$setInputs(clientConnections = 2, expectedClients = 400)
+  # 2 nodes x 100 places / 2 connections = 100 clients
+  check("light tab - clients at once", output$light_most == "100", output$light_most)
+  verdict <- output$light_verdict$html
+  check("light tab - the verdict states the clients and the maximum", grepl("Over capacity: 400 concurrent clients", verdict, fixed = TRUE) &&
+          grepl("at most 100", verdict, fixed = TRUE), verdict)
+  check("light tab - demand is red when over capacity", grepl(swarm_colours$unreachable, output$light_load$html, fixed = TRUE))
+  check("light tab - no bootnode list by default", output$light_list_note == "" && output$light_start_burst == "")
+  takes <- output$light_takes
+  check("light tab - three changes without bootnodes", lengths(regmatches(takes, gregexpr("<tr", takes))) == 4 && grepl("Result", takes, fixed = TRUE))
+  session$setInputs(listNodes = 5, startDials = 0)
+  check("light tab - warnings for a list longer than the reachable nodes and a list with no connections",
+        grepl("More bootnodes than WSS full nodes", output$light_input_warning) && grepl("0 bootnode peers per client", output$light_input_warning))
+  session$setInputs(listNodes = 1, startDials = 3)
+  check("light tab - a warning for more bootnode peers than peers", grepl("exceed peers per client", output$light_input_warning))
+  session$setInputs(listNodes = 1, startDials = 2)
+  check("light tab - a warning for more bootnode peers than bootnodes", grepl("exceed the bootnodes", output$light_input_warning))
+  session$setInputs(clientConnections = 1, listNodes = 1, startDials = 1)
+  check("light tab - all peers on bootnodes: no Inf in the note", grepl("no peers on other nodes", output$light_list_note) &&
+          !grepl("Inf", output$light_list_note) && !grepl("Inf", output$light_takes))
+  session$setInputs(clientConnections = 2, startDials = 1)
+  check("light tab - bootnodes add their rows and the dial-attempt line",
+        grepl("dial attempts", output$light_start_burst) && grepl("bootnode", output$light_takes))
+  session$setInputs(listNodes = 0, startDials = 0, otherLimit = 100, expectedClients = 10)
+  check("light tab - few clients fit", grepl("Within capacity", output$light_verdict$html))
+})
+fetch_swarmscan_data <- function() fixture
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)
