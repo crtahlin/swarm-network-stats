@@ -5,7 +5,8 @@
 # Revealed and TruthSelected logs of Redistribution and the PriceUpdate logs of the PriceOracle
 # for the 5,320 blocks before that block (6 hours plus 1,000 blocks), the StakeUpdated history of
 # every owner whose overlay revealed in that span plus 20 other owners, those owners' stakes()
-# answers, currentPrice(), and the PriceOracle's changeRate(0..8), priceBase(), minimumPrice() and
+# answers, the CurrentRevealAnchor logs of Redistribution and the PotWithdrawn logs of PostageStamp
+# for the same span, currentPrice(), and the PriceOracle's changeRate(0..8), priceBase(), minimumPrice() and
 # isPaused() answers. Logs keep only the fields the app reads.
 
 chain_fixture <- jsonlite::fromJSON("tests/fixtures/chain-sample.json", simplifyVector = FALSE)

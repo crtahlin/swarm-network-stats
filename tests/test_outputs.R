@@ -388,6 +388,30 @@ for (radius in c(4, 9)) {
   }
 }
 
+# last drawn: for each nbhood, the latest anchor whose first bits name it, against the raw fixture
+raw_redis <- chain_fixture$logs[[tolower(chain_contracts$redistribution$address)]]
+raw_anchor <- Filter(function(l) l$topics[[1]] == chain_topics$anchor && hex_to_number(l$blockNumber) >= chain$window_start, raw_redis)
+anchor_round <- vapply(raw_anchor, function(l) hex_to_number(substr(l$data, 3, 66)), 0)
+anchor_bits <- overlay_to_bits(vapply(raw_anchor, function(l) substr(l$data, 67, 130), ""))
+check("chain - every anchor in the window is read", nrow(chain$anchors) == length(raw_anchor) && setequal(chain$anchors$round, anchor_round))
+drawn <- last_drawn(chain$anchors, chain$truths, nbhood_names(4))
+expected_round <- vapply(nbhood_names(4), function(nb) { r <- anchor_round[substr(anchor_bits, 1, 4) == nb]; if (length(r)) max(r) else NA }, 0)
+check("map - last drawn is each nbhood's latest anchor", identical(unname(drawn$round), unname(expected_round)))
+check("map - last drawn is claimed when its round has a truth", identical(drawn$claimed, drawn$round %in% chain$truths$round))
+# pot payouts: the fixture's PotWithdrawn amounts in the last 6 hours, per day
+raw_pot <- chain_fixture$logs[[tolower(chain_contracts$postage_stamp$address)]]
+pot_time <- vapply(raw_pot, function(l) hex_to_number(l$blockTimestamp), 0)
+pot_amount <- vapply(raw_pot, function(l) hex_to_number(substr(l$data, 67, 130)), 0) / 1e16
+recent <- pot_time >= as.numeric(chain$head_time) - 0.25 * 86400
+check("map - pot paid per day", isTRUE(all.equal(pot_per_day(chain, 0.25), sum(pot_amount[recent]) / 0.25)) && sum(recent) > 0)
+# expected earnings by hand: 1,000 xBZZ a day over 512 nbhoods, 10 xBZZ against 90 is a tenth of the wins
+earn <- expected_earnings(1000, 9, 10, 90)
+check("map - expected earnings", isTRUE(all.equal(earn$win_share, 0.1)) && isTRUE(all.equal(earn$per_30_days, 1000 * 30 / 512 * 0.1)))
+members4 <- nbhood_members(chain$stakes, latest, dump, 4)
+some <- members4$nbhood[members4$kind == node_kinds[["active"]]][1]
+active_here <- members4[members4$nbhood == some & members4$kind == node_kinds[["active"]], ]
+check("map - stake weight halves per reserve doubling", isTRUE(all.equal(nbhood_stake_weight(members4, some), sum(active_here$effective_stake / 2^active_here$height))))
+
 # hover and click: the tile under the pointer, its summary, and its nodes
 testServer(server, {
   session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE)
@@ -400,6 +424,15 @@ testServer(server, {
   check("map - hover outside the tiles asks to point at one", grepl("Point at a neighbourhood", output$nbhood_hover_text))
   session$setInputs(nbhoodClick = list(x = busiest$x, y = -busiest$y))
   check("map - click selects the tile", output$nbhood_selected_text == paste("Nodes in neighbourhood", busiest$nbhood))
+  session$setInputs(earningsStake = 10)
+  details <- output$nbhood_selected_details
+  drawn_here <- last_drawn(chain_cache$data$anchors, chain_cache$data$truths, busiest$nbhood)
+  expected_earn <- expected_earnings(pot_per_day(chain_cache$data, 0.25), 4, 10, nbhood_stake_weight(members, busiest$nbhood))
+  check("map - details give the last draw", if (is.na(drawn_here$round)) grepl("Not drawn", details) else grepl(format_number(drawn_here$round), details, fixed = TRUE), details)
+  check("map - details give the expected earnings", grepl(sprintf("about %s xBZZ per 30 days", format_number(round(expected_earn$per_30_days, 2))), details, fixed = TRUE), details)
+  session$setInputs(earningsStake = 0)
+  check("map - a stake of 0 shows a message", grepl("Enter a stake above 0", output_or_error(output$nbhood_selected_details)))
+  session$setInputs(earningsStake = 10)
   output$nbhood_nodes
   listed <- captured("nbhood_nodes")
   check("map - the table lists the staked nodes of that nbhood",

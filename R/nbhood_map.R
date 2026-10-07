@@ -97,3 +97,36 @@ nbhood_summary <- function(tile, show_unstaked) {
   if (tile$not_in_dump > 0) text <- paste0(text, sprintf(". %d of the staked nodes are not listed by swarmscan", tile$not_in_dump))
   paste0(text, ".")
 }
+
+# the last round in which each neighbourhood was drawn: the round anchor fell in it. Rounds in
+# which nobody revealed leave no anchor on chain, so they are not counted. NA: not drawn in the window
+last_drawn <- function(anchors, truths, nbhoods) {
+  radius <- nchar(nbhoods[1])
+  anchors <- anchors[order(anchors$round, decreasing = TRUE), ]
+  latest <- match(nbhoods, substr(overlay_to_bits(anchors$anchor), 1, radius))
+  data.frame(nbhood = nbhoods, round = anchors$round[latest], time = anchors$time[latest],
+             claimed = anchors$round[latest] %in% truths$round)
+}
+
+# the pot paid to winners per day, in xBZZ, over the last `days` days
+pot_per_day <- function(chain, days) {
+  sum(chain$pots$amount_bzz[chain$pots$time >= chain$head_time - days * 86400]) / days
+}
+
+# what a new node staking `stake` xBZZ (no reserve doubling) in one neighbourhood can expect to
+# earn per 30 days. Each of the 2^radius neighbourhoods is drawn equally often, and the winner of
+# a drawn neighbourhood is picked among the matching reveals in proportion to stake density, which
+# for nodes at the same depth is effective stake / 2^height (Redistribution.reveal and
+# winnerSelection). others: the summed stake / 2^height of the active staked nodes already there,
+# all assumed to reveal a matching hash
+expected_earnings <- function(pot_per_day, radius, stake, others) {
+  win_share <- stake / (stake + others)
+  list(win_share = win_share, per_30_days = pot_per_day * 30 / 2^radius * win_share)
+}
+
+# the summed stake density weight (effective stake / 2^height) of the active staked nodes in a
+# neighbourhood, from nbhood_members()
+nbhood_stake_weight <- function(members, nbhood) {
+  active <- members[members$nbhood == nbhood & members$kind == node_kinds[["active"]], ]
+  sum(active$effective_stake / 2^active$height)
+}

@@ -406,12 +406,18 @@ ui <-
                 "several neighbourhoods and counts in each. Point at a tile for its counts; click it to list its nodes."),
               p("Light and ultra-light nodes are not shown: swarmscan does not list them, and their place in the ",
                 "network cannot be worked out from chain data."),
-              checkboxInput("showUnstaked", "Show non-staking nodes (full nodes without stake, from swarmscan)", value = FALSE, width = "100%"),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                checkboxInput("showUnstaked", "Show non-staking nodes (full nodes without stake, from swarmscan)", value = FALSE, width = "100%"),
+                numericInput("earningsStake", "Stake for the earnings estimate (xBZZ)", value = 10, min = 0.1, step = 1, width = "100%")
+              ),
               textOutput("nbhood_hover_text"),
               plotOutput("nbhoodMap", height = "640px", hover = hoverOpts("nbhoodHover", delay = 100, delayType = "throttle"),
                          click = "nbhoodClick"),
               br(),
               textOutput("nbhood_selected_text"),
+              textOutput("nbhood_selected_details"),
+              br(),
               DT::dataTableOutput("nbhood_nodes")),
 
     ###
@@ -736,6 +742,34 @@ server <- function(input, output, session) {
 
   output$nbhood_selected_text <- renderText({
     if (is.null(selected_nbhood())) "Click a neighbourhood to list its nodes." else paste("Nodes in neighbourhood", selected_nbhood())
+  })
+
+  # for the clicked neighbourhood: when it was last drawn, and what a new node staking the set
+  # amount could expect to earn there
+  output$nbhood_selected_details <- renderText({
+    shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
+    shiny::validate(shiny::need(isTRUE(input$earningsStake > 0), "Enter a stake above 0 for the earnings estimate."))
+    chain <- chain_data_polled()
+    radius <- input$storageRadius
+    drawn <- last_drawn(chain$anchors, chain$truths, selected_nbhood())
+    drawn_text <- if (is.na(drawn$round)) {
+      sprintf("Not drawn in the last %s days (rounds in which nobody revealed leave no record).", format_number(chain_window_days))
+    } else {
+      sprintf("Last drawn in round %s, %s UTC (%s).", format_number(drawn$round), format(drawn$time, "%Y-%m-%d %H:%M", tz = "UTC"),
+              if (drawn$claimed) "claimed" else "not claimed")
+    }
+    paid <- pot_per_day(chain, input$activeDays)
+    others <- nbhood_stake_weight(nbhood_members_reactive(), selected_nbhood())
+    earn <- expected_earnings(paid, radius, input$earningsStake, others)
+    paste(drawn_text, sprintf(paste(
+      "A new node staking %s xBZZ here could expect about %s xBZZ per 30 days (%s%% of its stake a year).",
+      "Winners were paid %s xBZZ a day over the last %s days; at radius %d a neighbourhood is drawn in 1 of %s rounds,",
+      "and the node would win %.1f%% of the rounds its neighbourhood is drawn in, against %s xBZZ of stake (weighted for reserve doubling) from the active staked nodes already here.",
+      "Assumes all of them reveal a matching hash, and that payouts stay as they were."),
+      format_number(input$earningsStake), format_number(round(earn$per_30_days, 2)),
+      format_number(round(100 * earn$per_30_days * 365 / 30 / input$earningsStake)),
+      format_number(round(paid)), format_number(input$activeDays), radius, format_number(2^radius),
+      100 * earn$win_share, format_number(round(others, 1))))
   })
 
   output$nbhood_nodes <- DT::renderDataTable({
