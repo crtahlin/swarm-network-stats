@@ -995,7 +995,7 @@ server <- function(input, output, session) {
     observed_drift(chain$prices, chain$price, chain$head_time, input$activeDays)
   })
   # the participation that reproduces the observed change with the real counts (no extra nodes),
-  # at today's 5-second blocks; NA if none does
+  # at the measured block time; NA if none does
   fitted_participation <- reactive({
     fit_participation(price_active_counts(), price_observed(), chain_data_polled()$oracle, price_block_seconds_now())
   })
