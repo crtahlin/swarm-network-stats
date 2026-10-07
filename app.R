@@ -1084,10 +1084,10 @@ server <- function(input, output, session) {
       "On chain over the same %s days: %s rounds, %s of them claimed (%.1f%% not claimed), with %.2f matching reveals per claimed round on average, against %.2f active staked nodes per neighbourhood.",
       format_number(input$activeDays), format_number(rounds$rounds), format_number(rounds$claimed),
       100 * (1 - rounds$claimed / max(rounds$rounds, 1)), rounds$mean_matching, mean(price_active_counts())),
-      if (is.na(rounds$drawn_depth) || !isTRUE(input$storageRadius %in% 1:16)) "" else if (rounds$drawn_depth == input$storageRadius)
-        sprintf("Neighbourhoods were drawn at depth %d (the matching reveals' depth minus height), the radius set in the sidebar.", rounds$drawn_depth) else
-        sprintf("Warning: neighbourhoods were drawn at depth %d (the matching reveals' depth minus height), but the sidebar radius is %d. The model counts nodes per neighbourhood at the sidebar radius, so set it to %d for these counts to match the game.",
-                rounds$drawn_depth, input$storageRadius, rounds$drawn_depth),
+      if (is.na(rounds$truth_depth) || !isTRUE(input$storageRadius %in% 1:16)) "" else if (rounds$truth_depth == input$storageRadius)
+        sprintf("The claimed truths were at depth %d, the radius set in the sidebar.", rounds$truth_depth) else
+        sprintf("Warning: the claimed truths were at depth %d, but the sidebar radius is %d. The model counts nodes per neighbourhood at the sidebar radius, so set it to %d for these counts to match the game.",
+                rounds$truth_depth, input$storageRadius, rounds$truth_depth),
       if (isTRUE(chain$oracle$paused)) "The price oracle is paused, so the price does not change at all, and the projection holds it flat." else "")
   })
 

@@ -608,17 +608,14 @@ testServer(server, {
   session$setInputs(pricePlot_brush = list(xmin = head_time - 4 * 3600, xmax = head_time + 86400))
   check("price tab - the plot renders zoomed in", !inherits(output_or_error(output$pricePlot), "output_error"))
   rs <- round_stats(chain_cache$data, 0.25)
-  # by hand: the most common depth - height of the matching reveals in claimed rounds
-  m <- chain_cache$data$reveals[chain_cache$data$reveals$matched_truth %in% TRUE & chain_cache$data$reveals$round %in% chain_cache$data$truths$round, ]
-  m <- m[m$round >= ceiling((chain_cache$data$to_block - 0.25 * 86400 / 5) / 152), ]
-  h <- chain_cache$data$stakes$height[match(m$overlay, chain_cache$data$stakes$overlay)]
-  check("price tab - the drawn depth is the matching reveals' depth minus height",
-        rs$drawn_depth == as.numeric(names(which.max(table((m$depth - h)[!is.na(h)])))), rs$drawn_depth)
-  check("price tab - the drawn depth is shown against the radius", !is.na(rs$drawn_depth) &&
-          grepl(sprintf("drawn at depth %d (the matching reveals' depth minus height), but the sidebar radius is 4", rs$drawn_depth), output$price_calibration, fixed = TRUE),
-        output$price_calibration)
-  session$setInputs(storageRadius = rs$drawn_depth)
-  check("price tab - no warning when the radius is the drawn depth", grepl("the radius set in the sidebar", output$price_calibration) &&
+  # from the raw fixture: every TruthSelected log in it has depth 9 (its second data word)
+  raw_truth <- Filter(function(l) l$topics[[1]] == chain_topics$truth, chain_fixture$logs[[tolower(chain_contracts$redistribution$address)]])
+  check("price tab - the truths' depth is read from TruthSelected",
+        all(vapply(raw_truth, function(l) hex_to_number(substr(l$data, 67, 130)), 0) == 9) && rs$truth_depth == 9, rs$truth_depth)
+  check("price tab - the truths' depth is shown against the radius",
+          grepl("truths were at depth 9, but the sidebar radius is 4", output$price_calibration, fixed = TRUE), output$price_calibration)
+  session$setInputs(storageRadius = 9)
+  check("price tab - no warning when the radius is the truths' depth", grepl("the radius set in the sidebar", output$price_calibration) &&
           !grepl("Warning", output$price_calibration))
   session$setInputs(storageRadius = 4)
   session$setInputs(horizonDays = 0)
