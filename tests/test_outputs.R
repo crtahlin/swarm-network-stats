@@ -79,8 +79,9 @@ expected_max_radius <- function(bits, minimum) {
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
                  "price_balance", "price_balance_note", "price_balance_text",
-                 "light_verdict", "light_accepting", "light_accepting_note", "light_places", "light_places_note", "light_max_clients",
-                 "light_max_note", "light_load", "light_load_note", "light_takes_intro", "light_takes", "light_cold_start", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
+                 "light_verdict", "light_list_places", "light_list_note", "light_on_list", "light_on_list_note", "light_most",
+                 "light_most_note", "light_load", "light_load_note", "light_network_note", "light_takes_intro", "light_takes",
+                 "light_start_burst", "lightPlot", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -106,8 +107,8 @@ for (variant in variants) {
     testServer(server, {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
                         participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
-                        clientConnections = 200, lightNodeLimit = 100, acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000,
-                        expectedClients = 4000)
+                        clientConnections = 200, startDials = 160, startList = "builtin", listLimit = 100, otherLimit = 100,
+                        listNodes = 400, expectedClients = 4000)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -647,8 +648,8 @@ storage_history_data <- synthetic
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
                     participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
-                        clientConnections = 200, lightNodeLimit = 100, acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000,
-                        expectedClients = 4000)
+                        clientConnections = 200, startDials = 160, startList = "builtin", listLimit = 100, otherLimit = 100,
+                        listNodes = 400, expectedClients = 4000)
   summary <- output$growth_summary
   check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
           grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date", summary, fixed = TRUE), summary)
@@ -689,61 +690,57 @@ testServer(server, {
 })
 storage_history_data <- read_storage_history(tempfile())
 
-### Connectivity: light-client capacity (R/light_capacity.R)
-full_nodes <- prepared$fullNode %in% TRUE
-check("light - full nodes reached by swarmscan", accepting_full_nodes(prepared, "reached") == sum(full_nodes & !(prepared$unreachable %in% TRUE)))
-check("light - full nodes that report themselves reachable",
-      accepting_full_nodes(prepared, "reachable") == sum(full_nodes & prepared$statusSnapshot$isReachable %in% TRUE))
+### Connectivity: browser tab capacity (R/light_capacity.R)
 # the sample has no secure WebSocket addresses (its underlays were reduced), so two full nodes get one
 with_wss <- fixture
 wss_rows <- which(with_wss$nodes$fullNode %in% TRUE)[1:2]
 for (i in wss_rows) with_wss$nodes$underlays[[i]] <- rbind(with_wss$nodes$underlays[[i]],
   data.frame(address = "/ip4/198.18.0.9/tcp/1635/tls/sni/198-18-0-9.k2k4.libp2p.direct/ws/p2p/16Uiu2"))
-check("light - only full nodes offering a secure WebSocket address count for browsers",
-      accepting_full_nodes(prepare_nodes_data(with_wss), "websocket") == 2 && accepting_full_nodes(prepared, "websocket") == 0)
-# by hand: 1,671 nodes x 100 places = 167,100; at 200 nodes per client that is 835 clients (the example in issue #44)
-cap <- light_capacity(1671, 100, 200, clients = 4000)
-check("light - places and clients at once", cap$places == 167100 && cap$per_client == 200 && cap$max_clients == 835)
-check("light - 4,000 clients need 479% of the places", isTRUE(all.equal(cap$load, 4000 * 200 / 167100)))
-check("light - our extra nodes add an even share, not their higher limit",
-      light_capacity(1671, 100, 200, extra_nodes = 10, extra_limit = 1000)$places == 1681 * 100)
-check("light - a client cannot connect to more nodes than exist", light_capacity(50, 100, 200)$per_client == 50 &&
-        light_capacity(50, 100, 200)$max_clients == 100)
-check("light - no nodes means no places", light_capacity(0, 100, 200, clients = 10)$max_clients == 0 && is.na(light_capacity(0, 100, 200)$load))
-# what it would take, by hand for 2,493 nodes x 100 places, 4,000 clients x 200 nodes = 800,000 places needed
-t <- what_it_takes(2493, 100, 200, 4000)
-check("light - what it takes: fewer connections, a higher limit, more nodes",
-      t$needed == 800000 && t$connections == 62 && t$limit == 321 && t$more_nodes == 5507, paste(unlist(t), collapse = " "))
-check("light - start-up: 4,000 tabs over 319 built-in nodes, 160 each", isTRUE(all.equal(cold_start_per_node(4000), 4000 * 160 / 319)))
-check("light - start-up: with 160 or fewer start-up nodes every tab dials each", cold_start_per_node(4000, 50) == 4000)
-check("light - start-up nodes needed: 4,000 tabs at 1,000 places is 640 nodes", start_nodes_needed(4000, 1000) == 640 &&
-        start_nodes_needed(500, 1000) == 1 && cold_start_per_node(4000, 640) <= 1000)
+check("light - only full nodes offering a secure WebSocket address are browser-capable",
+      browser_capable_nodes(prepare_nodes_data(with_wss)) == 2 && browser_capable_nodes(prepared) == 0)
+# by hand: the built-in list holds 319 x 100 = 31,900 places; a tab takes 160 of them, so 199 tabs fit
+cap <- tab_capacity(319, 100, 2175, 100, 200, 160, tabs = 4000)
+check("light - the start-up list fills at 199 tabs", cap$on_list == 160 && cap$elsewhere == 40 && cap$list_tabs == 199 &&
+        cap$other_tabs == floor(2175 * 100 / 40) && cap$most == 199 && cap$bound_by == "list")
+check("light - demand against capacity", isTRUE(all.equal(cap$load, 4000 / 199)))
+check("light - a short list takes every start-up connection on each of its nodes",
+      tab_capacity(50, 1000, 2000, 100, 200, 160)$on_list == 50 && tab_capacity(50, 1000, 2000, 100, 200, 160)$elsewhere == 150)
+check("light - when the rest of the network is smaller, it bounds the tabs",
+      tab_capacity(2000, 1000, 10, 100, 200, 160)$bound_by == "network" && tab_capacity(2000, 1000, 10, 100, 200, 160)$most == floor(10 * 100 / 40))
+# what it would take for 4,000 tabs on the built-in list: 4,000 x 160 / 100 = 6,400 nodes, or 2,007 places each, or 7 start-up connections
+t <- what_it_takes(319, 100, 2190, 100, 4000, 200, 160)
+check("light - what it takes", t$list_nodes == 6400 && t$list_limit == ceiling(4000 * 160 / 319) && t$start_dials == 7, paste(unlist(t), collapse = " "))
+# with the rest of the network counted: 40 connections elsewhere fit 2,190 x 100 / 40 = 5,475 browsers, so the first two rows are
+# enough; 7 start-up connections leave 193 elsewhere, which fit only 2,190 x 100 / 193 = 1,134 browsers
+check("light - more nodes or more places are enough once the network is counted", t$list_nodes_enough && t$list_limit_enough)
+check("light - fewer start-up connections alone is not enough", !t$start_dials_enough && t$start_dials_network == floor(2190 * 100 / 193))
+check("light - a page list at 1,000 places needs 640 nodes for 4,000 browsers", what_it_takes(400, 1000, 2493, 100, 4000)$list_nodes == 640)
+check("light - a list that already holds the browsers needs no more nodes", what_it_takes(1000, 1000, 2493, 100, 100)$list_nodes == 1000)
+check("light - opening at once: 4,000 tabs over 319 nodes, 160 each", isTRUE(all.equal(start_attempts_per_node(4000, 319, 160), 4000 * 160 / 319)))
+storage_history_data <- read_storage_history(tempfile())
+fetch_swarmscan_data <- function() with_wss
+swarm_cache$data <- NULL; swarm_cache$version <- 0; swarm_cache$next_attempt <- -Inf
 testServer(server, {
-  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, clientConnections = 200, lightNodeLimit = 100,
-                    acceptingRule = "reached", edgeNodes = 0, edgeNodeLimit = 1000, expectedClients = 4000)
-  accepting <- accepting_full_nodes(swarm_cache$data$nodes, "reached")
-  expected <- light_capacity(accepting, 100, 200, clients = 4000)
-  check("light tab - places and clients at once", output$light_places == format_number(expected$places) &&
-          output$light_max_clients == format_number(expected$max_clients))
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, expectedClients = 4000, startList = "builtin",
+                    listLimit = 100, otherLimit = 100, clientConnections = 200, startDials = 160, listNodes = 400)
+  expected <- tab_capacity(319, 100, 0, 100, 200, 160, tabs = 4000)  # the sample's 2 browser-capable nodes, less 303, leave 0
+  check("light tab - tabs at once and the bound", output$light_most == format_number(expected$most), output$light_most)
   verdict <- output$light_verdict$html
-  check("light tab - the verdict leads with the answer", grepl(if (expected$load > 1) "Not enough room" else if (expected$load > 0.8) "Close to full" else "Enough room",
-                                                                verdict) && grepl(format_number(expected$max_clients), verdict, fixed = TRUE), verdict)
-  check("light tab - demand is coloured by state", grepl(if (expected$load > 1) swarm_colours$unreachable else if (expected$load > 0.8) swarm_colours$error else swarm_colours$mint,
-                                                         output$light_load$html, fixed = TRUE))
+  check("light tab - the verdict leads with the answer", grepl("Not enough room", verdict) && grepl(format_number(expected$most), verdict, fixed = TRUE), verdict)
+  check("light tab - demand is red when over capacity", grepl(swarm_colours$unreachable, output$light_load$html, fixed = TRUE))
   takes <- output$light_takes
-  check("light tab - the what-it-takes table has a row for each change", lengths(regmatches(takes, gregexpr("<tr", takes))) == 4 &&
-          grepl("at most [0-9,]+ nodes each", takes) && grepl("Who", takes, fixed = TRUE) && !grepl("prefer", takes), substr(takes, 1, 200))
-  check("light tab - the start-up line names the bootstrapNodes option and the nodes it would take",
-        grepl("bootstrapNodes", output$light_cold_start, fixed = TRUE) && grepl("about 640 of our extra nodes", output$light_cold_start, fixed = TRUE),
-        output$light_cold_start)
-  session$setInputs(expectedClients = 10)
-  check("light tab - few clients fit", grepl("Enough room", output$light_verdict$html))
-  session$setInputs(expectedClients = 4000, edgeNodes = 20, edgeNodeLimit = 1000)
-  check("light tab - our extra nodes add an even share", output$light_places == format_number((accepting + 20) * 100) &&
-          grepl("higher limit is not reached", output$light_places_note))
-  session$setInputs(clientConnections = 0)
-  check("light tab - 0 connections shows a message", grepl("Enter 1 or more nodes", output_or_error(output$light_places)))
+  check("light tab - the what-it-takes table has a row for each change, with whether it is enough",
+        lengths(regmatches(takes, gregexpr("<tr", takes))) == 4 && grepl("bootstrapNodes", takes, fixed = TRUE) &&
+          grepl("shuffled", takes, fixed = TRUE) && grepl("Enough", takes, fixed = TRUE) && !grepl("prefer", takes))
+  session$setInputs(startList = "own", listNodes = 640, listLimit = 1000)
+  check("light tab - the page's own list of 640 nodes at 1,000 places",
+        grepl("(the page's list)", output$light_list_note, fixed = TRUE) && output$light_list_places == format_number(640000))
+  session$setInputs(expectedClients = 1)
+  check("light tab - one browser fits", grepl("Enough room", output$light_verdict$html))
+  session$setInputs(startDials = 0)
+  check("light tab - 0 connections shows a message", grepl("Enter 1 or more connections", output_or_error(output$light_most)))
 })
+fetch_swarmscan_data <- function() fixture
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)

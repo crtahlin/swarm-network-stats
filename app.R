@@ -525,58 +525,69 @@ ui <-
 
     ###
     nav_panel("Connectivity",
-              div(class = "section-label", "Browser client capacity"),
-              p("How many browser clients (for example, viewers of a stream) the Swarm network can serve at the same time. ",
-                "Each browser client holds a place on every full node it connects to, and each full node has a limited number of places."),
+              div(class = "section-label", "Browser capacity"),
+              p("How many browsers running weeb-3, the in-browser Swarm client, the network can serve at the same time ",
+                "(for example, viewers of a stream). Each browser connects to many full nodes, and each full node takes a limited ",
+                "number of browser and light clients. All weeb-3 tabs of one site in one browser share one set of connections, ",
+                "so a browser counts once however many tabs it has open."),
               uiOutput("light_verdict"),
               layout_column_wrap(
                 width = 1/4, fill = FALSE,
-                value_box(title = "Nodes browsers can use", value = textOutput("light_accepting"), textOutput("light_accepting_note", container = p)),
-                value_box(title = "Places for browser clients", value = textOutput("light_places"), textOutput("light_places_note", container = p)),
-                value_box(title = "Most clients at once", value = textOutput("light_max_clients"), textOutput("light_max_note", container = p)),
+                value_box(title = "Places on the start-up list", value = textOutput("light_list_places"), textOutput("light_list_note", container = p)),
+                value_box(title = "Start-up connections per browser", value = textOutput("light_on_list"), textOutput("light_on_list_note", container = p)),
+                value_box(title = "Browsers at once", value = textOutput("light_most"), textOutput("light_most_note", container = p)),
                 value_box(title = "Demand against capacity", value = uiOutput("light_load"), textOutput("light_load_note", container = p))
               ),
+              textOutput("light_network_note", container = p),
+              p("The places per listed node assume bee's default of 100; the limit actually set on those nodes is not known."),
               div(class = "section-label", "What it would take"),
               textOutput("light_takes_intro", container = p),
               tableOutput("light_takes"),
-              textOutput("light_cold_start", container = p),
-              div(class = "section-label", "Clients that fit, by connections per client"),
-              p("The number of nodes each client connects to decides how many clients fit. The dot is the current setting; ",
-                "the dashed line is the expected number of clients."),
+              textOutput("light_start_burst", container = p),
+              div(class = "section-label", "Browsers that fit, by size of the start-up list"),
+              p("With the places per listed node set below, and a list shuffled for each browser. The dot is the current list; ",
+                "the dashed line is the expected number of browsers."),
               plotOutput("lightPlot", height = "400px"),
               div(class = "section-label", "Assumptions you can change"),
               layout_column_wrap(
                 width = 1/3, fill = FALSE,
-                numericInput("expectedClients", "Browser clients online at the same time", value = 4000, min = 0, max = 1e6, step = 100),
-                numericInput("clientConnections", "Nodes each client connects to (weeb-3 measured about 200)", value = 200, min = 1, max = 2000, step = 1),
-                numericInput("lightNodeLimit", "Places per node (bee's light-node limit, 100 by default)", value = 100, min = 1, max = 10000, step = 1)
+                numericInput("expectedClients", "Browsers (viewers) at the same time", value = 4000, min = 0, max = 1e6, step = 100),
+                radioButtons("startList", "Start-up list", width = "100%",
+                             choices = c("weeb-3's built-in list" = "builtin", "A list the page passes (bootstrapNodes)" = "own")),
+                numericInput("listLimit", "Places per node on the start-up list (bee's light-node limit, 100 by default)", value = 100, min = 1, max = 100000, step = 100)
               ),
-              radioButtons("acceptingRule", "Count a full node as usable if it", choices = light_node_rules, selected = "websocket", width = "100%"),
+              conditionalPanel("input.startList == 'own'",
+                numericInput("listNodes", "Nodes on the page's list", value = 400, min = 1, max = 100000, step = 10)),
               layout_column_wrap(
-                width = 1/2, fill = FALSE,
-                numericInput("edgeNodes", "Our extra nodes for browser clients", value = 0, min = 0, max = 100000, step = 1),
-                numericInput("edgeNodeLimit", "Places on each of our extra nodes", value = 1000, min = 1, max = 100000, step = 100)
+                width = 1/3, fill = FALSE,
+                numericInput("otherLimit", "Places per node on the rest of the network (100 by default)", value = 100, min = 1, max = 100000, step = 100),
+                numericInput("clientConnections", "Connections per browser (weeb-3: 200)", value = weeb3_connections, min = 1, max = 2000, step = 1),
+                numericInput("startDials", "Start-up connections per browser (weeb-3: 160)", value = weeb3_start_dials, min = 1, max = 2000, step = 1)
               ),
-              p(strong("Our extra nodes"), " are full nodes we would run only to serve browser clients, set to take more of them than ",
-                "a normal node (a higher light-node limit, for example 1,000 places instead of 100). Once a browser client is running, ",
-                "it spreads its connections over the whole network, so every node gets the same share and the higher limit is not ",
-                "reached: for that, each extra node adds only as many places as any other node. Their higher limit does help at ",
-                "start-up, if the page that runs the client lists them as its start-up nodes (see What it would take). Making clients ",
-                "keep their connections on our nodes would need a change to the browser client; weeb-3 has no such setting today."),
               tags$details(
-                tags$summary("How this is calculated"),
+                tags$summary("Where the numbers come from"),
                 tags$ul(
-                  tags$li("Places = (usable full nodes + our extra nodes) × places per node. ",
-                          "Most clients at once = places ÷ nodes each client connects to. Demand against capacity = expected clients × ",
-                          "nodes each client connects to ÷ places."),
-                  tags$li("bee enforces the limit on each node (light-node limit, 100 by default; --light-node-limit since bee 2.8.2). ",
-                          "Browser (ultra-light) clients count against the same limit as native light nodes. When a node is full, it ",
-                          "disconnects a random light client to make room, so above 100% clients keep being dropped and reconnecting."),
-                  tags$li("Browser clients connect over secure WebSockets, so by default only full nodes that advertise a secure WebSocket ",
-                          "address count. Whether each of them really accepts browsers is not tested."),
-                  tags$li("Most clients at once is an upper bound: it assumes clients spread evenly over the nodes (kademlia prefers some ",
-                          "peers, so some nodes fill first) and that no other light clients are already connected."),
-                  tags$li("The sidebar settings do not apply to this tab.")
+                  tags$li("bee: each full node takes up to 100 browser and light clients by default (light-node limit; --light-node-limit since bee 2.8.2). ",
+                          "When it is full, it disconnects a random one to make room. Source: bee pkg/p2p/libp2p/libp2p.go."),
+                  tags$li("weeb-3 tells nodes it is not a full node, so each browser takes one of those places on every node it connects to. Source: weeb-3 src/handlers.rs."),
+                  tags$li("weeb-3 runs in a SharedWorker: all its tabs of one site in one browser share one node and one set of connections. Source: weeb-3 README.md."),
+                  tags$li("weeb-3 aims for 200 connections per browser, and lowers that target by a fifth for every 100 connections it loses, down to 30; ",
+                          "the 160 start-up connections are part of the 200. Source: weeb-3 src/accounting.rs and src/lib.rs."),
+                  tags$li("weeb-3 starts each browser on a random 160 of a list of 319 full nodes written into its code. Those 319 nodes use 4 IP addresses; ",
+                          "on 2026-10-07 swarmscan listed 304 of them, all running bee 2.8.2 and located in Germany. ",
+                          "A page that runs weeb-3 can pass its own list instead (bootstrapNodes). weeb-3 uses the first 160 entries of that list in order, ",
+                          "so the page has to shuffle it for each browser to spread the load; the numbers here assume it does. ",
+                          "Source: weeb-3 src/network_profile.rs, src/library.rs and src/worker_runtime.rs, commit 243eff5."),
+                  tags$li("Not known: the light-node limit set on the listed nodes. The default of 100 is used; their operators may have set a different one, ",
+                          "which would change the result directly."),
+                  tags$li("weeb-3 does not close idle connections. It closes connections that fail (dial, handshake, ping, or no pricing within 20 seconds), ",
+                          "duplicates, and some after a failed payment refresh. When a node drops it, weeb-3 dials the same node again after a few seconds. ",
+                          "So start-up nodes stay in use, and the start-up list fills first. Source: weeb-3 src/lib.rs (from reading the code; not tested)."),
+                  tags$li("The rest of each browser's connections go to other full nodes that advertise a secure WebSocket address, which browsers need. They are assumed to spread evenly; ",
+                          "whether each of these nodes really accepts browsers is not tested."),
+                  tags$li("Not measured: what happens after nodes fill. bee then keeps dropping random clients, and weeb-3 dials the same nodes again and lowers its target; ",
+                          "the numbers here stop at the point where nodes are full."),
+                  tags$li("The sidebar settings do not apply to this page.")
                 )
               )),
 
@@ -1243,121 +1254,121 @@ server <- function(input, output, session) {
   # CONNECTIVITY
   ###############
   light_model <- reactive({
-    shiny::validate(shiny::need(isTRUE(input$clientConnections >= 1), "Enter 1 or more nodes each client connects to."))
-    shiny::validate(shiny::need(isTRUE(input$lightNodeLimit >= 1), "Enter 1 or more places per node."))
-    shiny::validate(shiny::need(isTRUE(input$edgeNodes >= 0 && input$edgeNodeLimit >= 1), "Enter 0 or more extra nodes, with 1 or more places each."))
-    shiny::validate(shiny::need(isTRUE(input$expectedClients >= 0), "Enter 0 or more browser clients."))
-    accepting <- accepting_full_nodes(swarm_data()$nodes, input$acceptingRule)
-    capacity <- light_capacity(accepting, input$lightNodeLimit, input$clientConnections, input$edgeNodes, input$edgeNodeLimit,
-                               input$expectedClients)
-    c(list(accepting = accepting), capacity)
+    shiny::validate(shiny::need(isTRUE(input$expectedClients >= 0), "Enter 0 or more browsers."))
+    shiny::validate(shiny::need(isTRUE(input$listLimit >= 1 && input$otherLimit >= 1), "Enter 1 or more places per node."))
+    shiny::validate(shiny::need(isTRUE(input$clientConnections >= 1 && input$startDials >= 1), "Enter 1 or more connections per browser."))
+    own <- identical(input$startList, "own")
+    shiny::validate(shiny::need(!own || isTRUE(input$listNodes >= 1), "Enter 1 or more nodes on the page's list."))
+    capable <- browser_capable_nodes(swarm_data()$nodes)
+    list_nodes <- if (own) input$listNodes else weeb3_start_list
+    # with the built-in list, 303 of its nodes are among the browser-capable ones in the data; with the
+    # page's own list (for example, our nodes), all browser-capable nodes are elsewhere
+    other <- if (own) capable else max(0, capable - weeb3_list_in_data)
+    cap <- tab_capacity(list_nodes, input$listLimit, other, input$otherLimit, input$clientConnections, input$startDials, input$expectedClients)
+    c(list(capable = capable, list_nodes = list_nodes, other_nodes = other, own = own), cap)
   })
-  # green up to 80% of capacity, amber up to 100%, red above
-  light_state <- function(load) if (is.na(load) || load > 1) "over" else if (load > 0.8) "close" else "fits"
+  light_state <- function(load) if (!is.finite(load) || load > 1) "over" else if (load > 0.8) "close" else "fits"
   light_state_colour <- c(over = swarm_colours$unreachable, close = swarm_colours$error, fits = swarm_colours$mint)
+  list_name <- function(m) if (m$own) "the page's start-up list" else "weeb-3's built-in start-up list"
 
   output$light_verdict <- renderUI({
     m <- light_model()
-    clients <- input$expectedClients
-    state <- light_state(m$load)
-    text <- switch(state,
-      over = if (m$places == 0) "No room: no usable nodes with these settings." else
-        sprintf("Not enough room. The network can hold at most about %s browser clients at once; you expect %s, %.1f times as many. Nodes would keep dropping random clients to make room, so clients would keep losing connections and reconnecting.",
-                format_number(m$max_clients), format_number(clients), m$load),
-      close = sprintf("Close to full. The network can hold at most about %s browser clients at once; the %s you expect would use %.0f%% of the places.",
-                      format_number(m$max_clients), format_number(clients), 100 * m$load),
-      fits = sprintf("Enough room. The network can hold at most about %s browser clients at once; the %s you expect would use %.0f%% of the places.",
-                     format_number(m$max_clients), format_number(clients), 100 * m$load))
+    tabs <- input$expectedClients
+    bound <- if (m$bound_by == "list") sprintf("%s fills first", list_name(m)) else "the rest of the network fills first"
+    text <- switch(light_state(m$load),
+      over = sprintf("Not enough room. About %s browsers fit before nodes are full (%s); you expect %s, %s times as many. Full nodes drop random clients to make room; dropped browsers dial the same nodes again and lower their connection target, so connections would keep churning (not measured).",
+                     format_number(m$most), bound, format_number(tabs), format_number(round(m$load, 1))),
+      close = sprintf("Close to full. About %s browsers fit before nodes are full (%s); the %s you expect would use %.0f%% of that.",
+                      format_number(m$most), bound, format_number(tabs), 100 * m$load),
+      fits = sprintf("Enough room. About %s browsers fit before nodes are full (%s); the %s you expect would use %.0f%% of that.",
+                     format_number(m$most), bound, format_number(tabs), 100 * m$load))
     div(style = sprintf("border-left: 6px solid %s; background: %s; padding: 0.8em 1em; margin: 0.5em 0 1em; font-size: 1.15rem; font-weight: bold;",
-                        light_state_colour[[state]], swarm_colours$surface),
-        text)
+                        light_state_colour[[light_state(m$load)]], swarm_colours$surface), text)
   })
-  output$light_accepting <- renderText(format_number(light_model()$accepting))
-  output$light_accepting_note <- renderText({
-    rule <- names(light_node_rules)[light_node_rules == input$acceptingRule]
-    paste0("A full node counts if it ", rule, if (input$edgeNodes > 0) sprintf("; plus %s of our extra nodes", format_number(input$edgeNodes)) else "")
-  })
-  output$light_places <- renderText(format_number(light_model()$places))
-  output$light_places_note <- renderText({
+  output$light_list_places <- renderText(format_number(light_model()$list_nodes * input$listLimit))
+  output$light_list_note <- renderText({
     m <- light_model()
-    if (input$edgeNodes == 0) return(sprintf("%s nodes × %s places", format_number(m$accepting), format_number(input$lightNodeLimit)))
-    sprintf("(%s + %s of our extra nodes) × %s places; clients spread evenly, so the extra nodes' higher limit is not reached",
-            format_number(m$accepting), format_number(input$edgeNodes), format_number(min(input$lightNodeLimit, input$edgeNodeLimit)))
+    sprintf("%s nodes × %s places%s", format_number(m$list_nodes), format_number(input$listLimit),
+            if (m$own) " (the page's list)" else " (weeb-3's built-in list, on 4 IP addresses on 2026-10-07)")
   })
-  output$light_max_clients <- renderText(format_number(light_model()$max_clients))
-  output$light_max_note <- renderText({
+  output$light_on_list <- renderText(format_number(light_model()$on_list))
+  output$light_on_list_note <- renderText({
     m <- light_model()
-    note <- sprintf("%s places ÷ %s nodes per client; an upper bound", format_number(m$places), format_number(m$per_client))
-    if (m$per_client < input$clientConnections) note <- paste0(note, sprintf(" (only %s nodes to connect to)", format_number(m$per_client)))
-    note
+    sprintf("of the %s connections a browser makes; the other %s go to the rest of the network", format_number(input$clientConnections), format_number(m$elsewhere))
+  })
+  output$light_most <- renderText(format_number(light_model()$most))
+  output$light_most_note <- renderText({
+    m <- light_model()
+    if (m$bound_by == "list") sprintf("%s places ÷ %s per browser: when the start-up list is full", format_number(m$list_nodes * input$listLimit), format_number(m$on_list)) else
+      sprintf("the rest of the network fills first: %s nodes × %s places ÷ %s per browser", format_number(m$other_nodes), format_number(input$otherLimit), format_number(m$elsewhere))
   })
   output$light_load <- renderUI({
     load <- light_model()$load
     span(style = sprintf("color: %s;", light_state_colour[[light_state(load)]]),
-         if (is.na(load)) "no places" else sprintf("%s%%", format_number(round(100 * load))))
+         if (!is.finite(load)) "no room" else sprintf("%s%%", format_number(round(100 * load))))
   })
-  output$light_load_note <- renderText({
+  output$light_load_note <- renderText(sprintf("%s expected browsers ÷ %s that fit. Above 100%%, nodes drop random clients.",
+                                               format_number(input$expectedClients), format_number(light_model()$most)))
+  output$light_network_note <- renderText({
     m <- light_model()
-    sprintf("%s clients × %s nodes each = %s places needed. Above 100%%, nodes drop random clients.",
-            format_number(input$expectedClients), format_number(m$per_client), format_number(input$expectedClients * m$per_client))
+    if (m$elsewhere == 0) return("Each browser makes all its connections on the start-up list.")
+    sprintf("The rest of each browser's connections (%s) go to the other (about %s) full nodes that advertise a secure WebSocket address, which browsers need; spread evenly, they would hold about %s browsers.",
+            format_number(m$elsewhere), format_number(m$other_nodes), format_number(m$other_tabs))
   })
 
   light_takes <- reactive({
     m <- light_model()
-    what_it_takes(m$accepting, input$lightNodeLimit, input$clientConnections, input$expectedClients)
+    what_it_takes(m$list_nodes, input$listLimit, m$other_nodes, input$otherLimit, input$expectedClients, input$clientConnections, input$startDials)
   })
   output$light_takes_intro <- renderText({
-    t <- light_takes()
-    sprintf("For %s clients connecting to %s nodes each, the network needs %s places; today's usable nodes give %s. Any one of these changes would be enough (same assumptions as above):",
-            format_number(input$expectedClients), format_number(input$clientConnections), format_number(t$needed),
-            format_number(light_model()$accepting * input$lightNodeLimit))
+    m <- light_model()
+    sprintf("Changes to %s that would let %s browsers fit, each on its own. The last column says whether it is enough once the rest of the network is counted too.",
+            list_name(m), format_number(input$expectedClients))
   })
   output$light_takes <- renderTable({
     t <- light_takes()
     m <- light_model()
+    enough <- function(ok, note = "") if (ok) "enough" else paste("not enough on its own", note)
     data.frame(
-      Change = c("Clients connect to fewer nodes", "Every usable node takes more clients",
-                 "More full nodes offering a secure WebSocket address (ours or anyone's)"),
-      Needed = c(sprintf("at most %s nodes each, instead of %s", format_number(t$connections), format_number(input$clientConnections)),
-                 sprintf("%s places per node, instead of %s", format_number(t$limit), format_number(input$lightNodeLimit)),
-                 sprintf("%s more, at %s places each", format_number(t$more_nodes), format_number(input$lightNodeLimit))),
-      Who = c("the browser client's authors", "every node operator (we can only change our own nodes)", "node operators, including us"),
+      Change = c("A start-up list with more nodes", "More places on each listed node", "Fewer start-up connections per browser"),
+      Needed = c(sprintf("%s nodes with %s places each, instead of %s", format_number(t$list_nodes), format_number(input$listLimit), format_number(m$list_nodes)),
+                 sprintf("%s places per node, instead of %s", format_number(t$list_limit), format_number(input$listLimit)),
+                 sprintf("at most %s per browser, instead of %s", format_number(t$start_dials), format_number(m$on_list))),
+      How = c("the page that runs weeb-3 passes its own list (bootstrapNodes), shuffled for each browser; for example, of nodes we run",
+              "the operators of the listed nodes raise --light-node-limit (bee 2.8.2 and later)",
+              "a change to weeb-3"),
+      Enough = c(enough(t$list_nodes_enough), enough(t$list_limit_enough),
+                 enough(t$start_dials_enough, sprintf("(the other connections would then need the rest of the network, which holds about %s browsers)",
+                                                      format_number(t$start_dials_network)))),
       check.names = FALSE)
   }, striped = TRUE, spacing = "s", width = "100%")
-  output$light_cold_start <- renderText({
-    clients <- input$expectedClients
-    sprintf(paste("Starting up: when a tab opens, weeb-3 dials up to %s start-up nodes: by default %s of its %s built-in nodes, picked at random.",
-                  "If all %s clients start at about the same time, each built-in node gets about %s connection attempts, against %s places;",
-                  "whether those connections are kept after start-up has not been measured.",
-                  "The page that runs the client can pass its own start-up nodes instead (weeb-3's bootstrapNodes start option), which replace the built-in ones:",
-                  "to take the same burst, about %s of our extra nodes with %s places each would be needed."),
-            weeb3_initial_dials, weeb3_initial_dials, weeb3_bootnodes, format_number(clients),
-            format_number(round(cold_start_per_node(clients))), format_number(input$lightNodeLimit),
-            format_number(start_nodes_needed(clients, input$edgeNodeLimit)), format_number(input$edgeNodeLimit))
+  output$light_start_burst <- renderText({
+    m <- light_model()
+    sprintf("Starting at once: if all %s browsers start at about the same time, each node on the start-up list gets about %s connection attempts, against %s places.",
+            format_number(input$expectedClients), format_number(round(start_attempts_per_node(input$expectedClients, m$list_nodes, input$startDials))),
+            format_number(input$listLimit))
   })
 
   output$lightPlot <- renderPlot({
     m <- light_model()
-    shiny::validate(shiny::need(m$places > 0, "There are no places with these settings."))
-    nodes <- m$accepting + input$edgeNodes
-    curve <- data.frame(connections = seq(1, max(300, input$clientConnections * 1.2), length.out = 300))
-    curve$clients <- vapply(curve$connections, function(k)
-      light_capacity(m$accepting, input$lightNodeLimit, k, input$edgeNodes, input$edgeNodeLimit, 0)$max_clients, numeric(1))
-    now <- data.frame(connections = input$clientConnections, clients = m$max_clients)
-    ggplot(curve, aes(x = connections, y = clients)) +
+    sizes <- unique(round(seq(10, max(2000, m$list_nodes * 1.5), length.out = 300)))
+    curve <- data.frame(nodes = sizes, tabs = vapply(sizes, function(n)
+      tab_capacity(n, input$listLimit, m$other_nodes, input$otherLimit,
+                   input$clientConnections, input$startDials)$most, numeric(1)))
+    now <- data.frame(nodes = m$list_nodes, tabs = m$most)
+    ggplot(curve, aes(x = nodes, y = tabs)) +
       geom_hline(yintercept = input$expectedClients, colour = swarm_colours$orange, linetype = "dashed", linewidth = 0.9) +
-      annotate("text", x = max(curve$connections), y = input$expectedClients, label = sprintf("expected: %s clients", format_number(input$expectedClients)),
+      annotate("text", x = max(curve$nodes), y = input$expectedClients, label = sprintf("expected: %s browsers", format_number(input$expectedClients)),
                colour = swarm_colours$orange, family = "mono", fontface = "bold", size = 5, hjust = 1, vjust = -0.6) +
       geom_line(colour = swarm_colours$mint, linewidth = 1.2) +
       geom_point(data = now, colour = swarm_colours$text, size = 4) +
-      geom_text(data = now, aes(label = sprintf("now: %s nodes → %s clients", format_number(connections), format_number(clients))),
+      geom_text(data = now, aes(label = sprintf("now: %s nodes → %s browsers", format_number(nodes), format_number(tabs))),
                 colour = swarm_colours$text, family = "mono", fontface = "bold", size = 5, vjust = -0.8,
-                # to the left of the dot when it sits in the right half, so the label stays inside the plot
-                hjust = if (input$clientConnections > max(curve$connections) / 2) 1.05 else -0.05) +
+                hjust = if (m$list_nodes > max(curve$nodes) / 2) 1.05 else -0.05) +
+      scale_x_continuous(labels = function(x) format_number(x)) +
       scale_y_continuous(labels = function(x) format_number(x)) +
-      coord_cartesian(ylim = c(0, max(input$expectedClients, m$max_clients) * 2.2)) +
       swarm_plot_theme + swarm_readable_text +
-      labs(x = "Nodes each client connects to", y = "Clients that fit at once") +
+      labs(x = "Nodes on the start-up list", y = "Browsers that fit at once") +
       theme(axis.title.x = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16))
   }, bg = swarm_colours$bg)
 
