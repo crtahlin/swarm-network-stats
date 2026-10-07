@@ -461,14 +461,17 @@ ui <-
                 "and the number of matching reveals sets the change: fewer than 4 raise the price, more than 4 lower it, ",
                 "and a round nobody claims counts as the largest rise. The model takes the staked nodes that revealed ",
                 "within the days set in the sidebar, in every neighbourhood at the sidebar's radius, and assumes each of ",
-                "them reveals a matching hash with the participation set below. It then extends today's price at the ",
-                "expected change per day."),
+                "them reveals a matching hash with the probability set below as participation. It then extends today's price at the ",
+                "expected change per day. Participation is a calibrated parameter: the value that makes the model reproduce ",
+                "the observed price change, not a measured reveal rate. The chain's own figure, matching reveals per claimed round, ",
+                "is shown under the boxes. The 2-second option applies 2-second blocks from today, with no rescaling of the ",
+                "price; GIP-153 plans the change for about December 2026."),
               layout_column_wrap(
                 width = 1/4, fill = FALSE,
-                sliderInput("participation", "Participation (%)", min = 0, max = 100, value = 100, step = 1),
+                sliderInput("participation", "Participation, calibrated (%)", min = 0, max = 100, value = 100, step = 1),
                 numericInput("horizonDays", "Horizon (days)", value = 90, min = 1, max = 730, step = 1),
                 radioButtons("blockSeconds", "Gnosis block time",
-                             choices = c("5 seconds (now)" = 5, "2 seconds (planned, GIP-153)" = 2), selected = 5),
+                             choices = c("5 seconds (now)" = 5, "2 seconds from today, price not rescaled (GIP-153)" = 2), selected = 5),
                 numericInput("extraNodes", "Extra staked nodes in each neighbourhood with fewer than 4",
                              value = 0, min = 0, max = 10, step = 1)
               ),
@@ -974,7 +977,8 @@ server <- function(input, output, session) {
   price_model <- reactive({
     chain <- chain_data_polled()
     settings <- price_settings()
-    drift <- model_drift(price_nbhood_counts(), settings$q, chain$oracle, settings$block_seconds)
+    # while the price oracle is paused, adjustPrice changes nothing, so the price stays where it is
+    drift <- if (isTRUE(chain$oracle$paused)) 0 else model_drift(price_nbhood_counts(), settings$q, chain$oracle, settings$block_seconds)
     list(chain = chain, drift = drift, observed = price_observed(), settings = settings,
          projection = project_price(chain$price, chain$head_time, drift, settings$days, chain$oracle$minimum_price))
   })
@@ -1039,7 +1043,11 @@ server <- function(input, output, session) {
       "On chain over the same %s days: %s rounds, %s of them claimed (%.1f%% not claimed), with %.2f matching reveals per claimed round on average, against %.2f active staked nodes per neighbourhood.",
       format_number(input$activeDays), format_number(rounds$rounds), format_number(rounds$claimed),
       100 * (1 - rounds$claimed / max(rounds$rounds, 1)), rounds$mean_matching, mean(price_active_counts())),
-      if (isTRUE(chain$oracle$paused)) "The price oracle is paused, so the price does not change at all." else "")
+      if (is.na(rounds$truth_depth)) "" else if (rounds$truth_depth == input$storageRadius)
+        sprintf("The claimed truths were at depth %d, the radius set in the sidebar.", rounds$truth_depth) else
+        sprintf("Warning: the claimed truths were at depth %d, but the sidebar radius is %d. The model counts nodes per neighbourhood at the sidebar radius, so set it to %d for these counts to match the game.",
+                rounds$truth_depth, input$storageRadius, rounds$truth_depth),
+      if (isTRUE(chain$oracle$paused)) "The price oracle is paused, so the price does not change at all, and the projection holds it flat." else "")
   })
 
   # zoom state of each plot against time: NULL for the whole plot, or the dragged period

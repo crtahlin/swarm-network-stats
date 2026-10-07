@@ -69,8 +69,11 @@ round_stats <- function(chain, days, block_seconds = 5) {
   rounds <- if (last_round >= first_round) first_round:last_round else numeric(0)
   claimed <- intersect(rounds, chain$truths$round)
   matched <- chain$reveals[chain$reveals$round %in% claimed & chain$reveals$matched_truth %in% TRUE, ]
+  # the depth the claimed truths were at: the depth the nodes that won reported, the most common one
+  depths <- chain$truths$truth_depth[chain$truths$round %in% claimed]
   list(rounds = length(rounds), claimed = length(claimed),
-       mean_matching = if (length(claimed)) nrow(matched) / length(claimed) else NA_real_)
+       mean_matching = if (length(claimed)) nrow(matched) / length(claimed) else NA_real_,
+       truth_depth = if (length(depths)) as.numeric(names(which.max(table(depths)))) else NA_real_)
 }
 
 # what it costs, in BZZ, to keep 1 GiB (2^18 chunks of 4 KiB) for 30 days at a price in PLUR per

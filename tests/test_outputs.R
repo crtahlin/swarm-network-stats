@@ -577,9 +577,27 @@ testServer(server, {
   check("price tab - in the future the pointer reads the projection", grepl("projection", output$pricePlot_hover), output$pricePlot_hover)
   session$setInputs(pricePlot_brush = list(xmin = head_time - 4 * 3600, xmax = head_time + 86400))
   check("price tab - the plot renders zoomed in", !inherits(output_or_error(output$pricePlot), "output_error"))
+  rs <- round_stats(chain_cache$data, 0.25)
+  check("price tab - the truths' depth is shown against the radius", !is.na(rs$truth_depth) &&
+          grepl(sprintf("truths were at depth %d, but the sidebar radius is 4", rs$truth_depth), output$price_calibration, fixed = TRUE),
+        output$price_calibration)
+  session$setInputs(storageRadius = rs$truth_depth)
+  check("price tab - no warning when the radius is the truths' depth", grepl("the radius set in the sidebar", output$price_calibration) &&
+          !grepl("Warning", output$price_calibration))
+  session$setInputs(storageRadius = 4)
   session$setInputs(horizonDays = 0)
   check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
 })
+# while the price oracle is paused, the projection holds the price flat
+chain_cache$data$oracle$paused <- TRUE
+testServer(server, {
+  session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
+                    participation = 50, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+  check("price tab - paused: the model change is 0", output$price_model_change == "+0.00%", output$price_model_change)
+  check("price tab - paused: the price at the horizon is today's", output$price_at_horizon == output$price_now)
+  check("price tab - paused: the calibration says so", grepl("paused", output$price_calibration))
+})
+chain_cache$data$oracle$paused <- FALSE
 rm(updateSliderInput)
 
 ### Storage growth (R/storage_history.R)
