@@ -386,7 +386,19 @@ swarm_readable_text <- theme(
 
 ### APPLICATION
 ### UI part
-ui <- 
+# the tabs each sidebar setting applies to; the sidebar shows a setting only while one of them is open
+setting_tabs <- list(
+  storageRadius = c("Nbhood plot", "Nbhood map", "Price projection", "Storage growth", "Nbhoods stats", "Nodes info"),
+  minNodesPerNbhood = c("Data"),
+  onlyFullNodes = c("Map", "Data", "Reachability", "Nbhood plot", "Nbhoods stats", "Nodes info"),
+  activeDays = c("Nbhood map", "Price projection", "Nodes info")
+)
+# a sidebar setting shown only on its tabs. The input keeps its value while it is hidden
+for_tabs <- function(setting, input) {
+  conditionalPanel(sprintf("[%s].includes(input.tab)", paste0("'", setting_tabs[[setting]], "'", collapse = ", ")), input)
+}
+
+ui <-
   page_navbar(
     title = span(span(class = "hex", HTML("&#x2B22;")), "swarm network stats"),
     theme = swarm_theme,
@@ -395,16 +407,20 @@ ui <-
     fillable = FALSE,
     header = tags$style(HTML(swarm_css)),
     # settings part
+    id = "tab",
     sidebar = sidebar(title = "Settings",
                       # 9 until data arrives; then the radius most nodes report (see server)
-                      numericInput("storageRadius", "Storage radius",
-                                   value = 9, min = 1, max = 16, step = 1),
-                      numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
-                                   value = 2, min = 1, max = 8),
-                      checkboxInput("onlyFullNodes", "Show only full nodes",
-                                    value = TRUE),
-                      numericInput("activeDays", "Active within (days)",
-                                   value = chain_window_days, min = 1, max = chain_window_days, step = 1),
+                      for_tabs("storageRadius", numericInput("storageRadius", "Storage radius",
+                                                             value = 9, min = 1, max = 16, step = 1)),
+                      for_tabs("minNodesPerNbhood", numericInput("minNodesPerNbhood", "Minimum nodes per nbhood",
+                                                                 value = 2, min = 1, max = 8)),
+                      for_tabs("onlyFullNodes", checkboxInput("onlyFullNodes", "Show only full nodes",
+                                                              value = TRUE)),
+                      for_tabs("activeDays", numericInput("activeDays", "Active within (days)",
+                                                          value = chain_window_days, min = 1, max = chain_window_days, step = 1)),
+                      conditionalPanel(sprintf("![%s].includes(input.tab)",
+                                               paste0("'", unique(unlist(setting_tabs)), "'", collapse = ", ")),
+                                       p("No setting applies to this tab.")),
                       textOutput("data_status"),
                       textOutput("chain_status")),
     # panels part
@@ -716,25 +732,30 @@ server <- function(input, output, session) {
     chain_status_text()
   })
 
-  # based on the storage radius set, take the first n chars of the overlay address and add to the data
-  nodes_data_reactive <- reactive({
-    # the input's max = 16 is not enforced on typed values, and outputs build 2^radius
-    # nbhood names, so only whole radii from 1 to 16 are accepted
-    shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
+  # the nodes after the "Show only full nodes" filter; tabs that show no neighbourhood (Map, Data,
+  # Reachability) use this, so they do not depend on the storage radius, which they hide
+  filtered_nodes_reactive <- reactive({
     nodes_data <- swarm_data()$nodes
-    nodes_data$overlay_short <- first_n_places(nodes_data$overlay_binary, input$storageRadius)
-    nodes_data$overlay_short_next <- str_right( first_n_places(nodes_data$overlay_binary, (input$storageRadius + 1)), 1 )
     # set TRUE if an error string is found in the top-level or the status snapshot error field
     nodes_data$error_logical <- has_text(nodes_data$error) | has_text(nodes_data$statusSnapshot$error)
-    
+
     # if user sets to only display full nodes, filter out the rest
     if (input$onlyFullNodes) {
       nodes_data <- nodes_data[!is.na(nodes_data$fullNode), ]
       nodes_data <- nodes_data[nodes_data$fullNode, ]
     }
-    
-    # return data
-    return(nodes_data)
+    nodes_data
+  })
+
+  # based on the storage radius set, take the first n chars of the overlay address and add to the data
+  nodes_data_reactive <- reactive({
+    # the input's max = 16 is not enforced on typed values, and outputs build 2^radius
+    # nbhood names, so only whole radii from 1 to 16 are accepted
+    shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
+    nodes_data <- filtered_nodes_reactive()
+    nodes_data$overlay_short <- first_n_places(nodes_data$overlay_binary, input$storageRadius)
+    nodes_data$overlay_short_next <- str_right( first_n_places(nodes_data$overlay_binary, (input$storageRadius + 1)), 1 )
+    nodes_data
   })
   
   ###############
@@ -777,7 +798,7 @@ server <- function(input, output, session) {
   
   # how many shown nodes have a borrowed location, and how many are left off the map
   output$map_note <- renderText({
-    shown <- nodes_data_reactive()
+    shown <- filtered_nodes_reactive()
     sprintf("Locations of %d nodes are taken from another node with the same public IP address. %d nodes have no known location and are not shown.",
             sum(shown$location_source %in% "same IP"), sum(is.na(shown$location$latitude)))
   })
@@ -791,7 +812,7 @@ server <- function(input, output, session) {
       addTiles(urlTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
                attribution = "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ", options = tileOptions(maxZoom = 16)) %>%
       # addAwesomeMarkers(lat = nodes_data$location$latitude, lng = nodes_data$location$longitude) %>%
-      addCircleMarkers(clusterOptions = markerClusterOptions(), lat = nodes_data_reactive()$location$latitude, lng = nodes_data_reactive()$location$longitude,
+      addCircleMarkers(clusterOptions = markerClusterOptions(), lat = filtered_nodes_reactive()$location$latitude, lng = filtered_nodes_reactive()$location$longitude,
                        radius = 5, stroke = FALSE, fillColor = swarm_colours$orange, fillOpacity = 0.9)
     
     # return plot
@@ -1591,7 +1612,7 @@ server <- function(input, output, session) {
   # table of reachability
   output$reachability_status <- DT::renderDataTable({
     reachability_table <- 
-      nodes_data_reactive() %>% 
+      filtered_nodes_reactive() %>% 
       group_by(overlay) %>%  
       group_by(fullNode, statusSnapshot$isReachable) %>%
       summarise(count = n())
@@ -1619,13 +1640,13 @@ server <- function(input, output, session) {
     # (shiny:: because jsonlite also has a validate function)
     shiny::validate(shiny::need(isTRUE(input$minNodesPerNbhood >= 1), "Enter a minimum of 1 or more nodes per nbhood."))
     # radius 0 is a single nbhood holding every node; if even that is too small, no radius works
-    shiny::validate(shiny::need(nrow(nodes_data_reactive()) >= input$minNodesPerNbhood,
+    shiny::validate(shiny::need(nrow(filtered_nodes_reactive()) >= input$minNodesPerNbhood,
                   "There are fewer nodes than the minimum per nbhood, so no radius has enough nodes."))
 
     # node count of the smallest nbhood at radius r; there are 2^r nbhoods, so if fewer
     # of them appear in the data, at least one is empty and the smallest count is 0
     smallest_nbhood_count <- function(r) {
-      counts <- table(first_n_places(nodes_data_reactive()$overlay_binary, r))
+      counts <- table(first_n_places(filtered_nodes_reactive()$overlay_binary, r))
       if (length(counts) < 2^r) 0 else min(counts)
     }
 
