@@ -37,8 +37,9 @@ rpc_batch_size <- 250                # eth_calls per batch request
 logs_min_span <- 1000                # a log query that fails is split in halves down to this many blocks
 # no log query spans more blocks than this: over 50,000 results rpc.gnosischain.com can answer with
 # an empty list instead of an error (issue #50). 1,000,000 blocks is about 58 days, or about 21,000
-# reveals at the rate of October 2026
-logs_max_span <- 1e6
+# reveals at the rate of October 2026. An endpoint with a lower limit, set through SWARM_RPC_URL,
+# needs a smaller span: set it with SWARM_RPC_LOG_SPAN
+logs_max_span <- as.numeric(Sys.getenv("SWARM_RPC_LOG_SPAN", "1000000"))
 
 # the RPC endpoint; SWARM_RPC_URL overrides the public Gnosis endpoint
 chain_rpc_url <- function() {

@@ -305,8 +305,9 @@ fake_rpc$max_logs <- Inf
 # an RPC that answers an empty list over its limit (issue #50) loses data on a long query; reading
 # in pieces of at most logs_max_span blocks keeps every query under the limit
 fake_rpc$empty_over <- 100
-check("chain - an empty answer over the limit loses data without the span cap", !same_data(fetch_chain_data(), chain))
-saved_span <- logs_max_span; logs_max_span <- 200; fake_rpc$requests <- 0
+saved_span <- logs_max_span; logs_max_span <- 1e9
+check("chain - an empty answer over the limit loses data when queries are not capped", !same_data(fetch_chain_data(), chain))
+logs_max_span <- 1000; fake_rpc$requests <- 0
 capped <- fetch_chain_data()
 check("chain - log queries capped at logs_max_span blocks give the same data", same_data(capped, chain) && fake_rpc$requests > 10)
 logs_max_span <- saved_span; fake_rpc$empty_over <- Inf
