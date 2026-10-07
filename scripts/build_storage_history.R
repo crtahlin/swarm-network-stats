@@ -26,7 +26,16 @@ from <- if (length(args) >= 1) as.Date(args[1]) else first_archived_day
 to <- if (length(args) >= 2) as.Date(args[2]) else Sys.Date() - 1
 
 dir.create(dirname(storage_history_file), showWarnings = FALSE)
-done <- read_storage_history()$date
+# days in the range with fewer than min_reporting_nodes reporting nodes are fetched again: their row is dropped
+history <- read_storage_history()
+thin <- history$nodes_reporting < min_reporting_nodes & history$date >= from & history$date <= to
+if (any(thin)) {
+  cat(sprintf("fetching %d thin days again\n", sum(thin)))
+  kept <- history[!thin, ]
+  kept$date <- format(kept$date)
+  utils::write.table(kept, storage_history_file, sep = ",", row.names = FALSE)
+}
+done <- history$date[!thin]
 todo <- setdiff(seq(from, to, by = "day"), done)
 cat(sprintf("%d days to fetch between %s and %s (%d already in %s)\n",
             length(todo), from, to, sum(done >= from & done <= to), storage_history_file))
@@ -52,8 +61,9 @@ for (day in todo) {
     if (!is.null(row) && row$nodes_reporting >= good_status_nodes) break
   }
   if (is.null(row)) next
-  # append, writing the header only into a new file
-  new_file <- !file.exists(storage_history_file)
+  # append in the file's column order, writing the header only into a new file
+  new_file <- !file.exists(storage_history_file) || file.size(storage_history_file) == 0
+  if (!new_file) row <- row[, names(utils::read.csv(storage_history_file, nrows = 1))]
   utils::write.table(row, storage_history_file, sep = ",", row.names = FALSE, col.names = new_file, append = !new_file)
   cat(sprintf("%s  %6d nodes  radius %s  stored %.2f TiB\n", format(day), row$nodes, row$radius_mode, row$stored_tib))
   gc(verbose = FALSE)
