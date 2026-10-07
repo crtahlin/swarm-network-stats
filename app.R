@@ -24,7 +24,10 @@ swarmscan_dump_url <- "https://api.swarmscan.io/v1/network/dump"
 refresh_interval_secs <- 10 * 60  # download new data this often
 retry_interval_secs <- 60         # after a failed download with no data yet, try again this soon
 retry_with_data_secs <- 5 * 60    # after a failed refresh while older data is shown, try again this soon
-download_timeout_secs <- 20       # the download normally takes 1-2 s; a hanging server blocks every session until this runs out
+# the download took 10-12 s on 2026-10-07 (about 32 MB, sent deflate-compressed as about 5 MB; httr
+# asks for compression by default) and grows with the network. A hanging server blocks every
+# session until this runs out (issue #48), so it stays moderate
+download_timeout_secs <- 60
 current_time <- function() Sys.time()
 
 # download the network dump; stops with a readable message on a network error,
