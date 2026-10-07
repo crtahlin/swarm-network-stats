@@ -384,9 +384,26 @@ for (radius in c(4, 9)) {
           nrow(tiles) == 2^radius && sum(tiles$active) == sum(members$kind == node_kinds[["active"]]) &&
             sum(tiles$idle) == sum(members$kind == node_kinds[["idle"]]) && sum(tiles$unstaked) == nrow(unstaked_rows) &&
             all(tiles$shown == tiles$active + if (show) tiles$unstaked else 0) &&
-            all(as.character(tiles$class) == ifelse(tiles$shown >= 5, "5 or more", as.character(tiles$shown))))
+            all(as.character(tiles$class) == ifelse(tiles$active + tiles$idle + tiles$unstaked == 0, "No node",
+                                                    ifelse(tiles$shown >= 5, "5 or more", as.character(tiles$shown)))))
   }
 }
+
+# a nbhood with no node at all has its own class; one with only idle or hidden nodes does not
+fake_members <- data.frame(nbhood = c("01", "10"), kind = c(node_kinds[["idle"]], node_kinds[["unstaked"]]), in_swarmscan = TRUE)
+fake_tiles <- nbhood_tiles(fake_members, 2, FALSE)
+check("map - empty nbhoods are told apart from hidden or idle ones",
+      identical(as.character(fake_tiles$class[match(c("00", "01", "10", "11"), fake_tiles$nbhood)]), c("No node", "0", "0", "No node")))
+# a stake with height greater than the radius cannot play there and is left out; a full node without an overlay is left out
+deep <- chain$stakes[1, ]; deep$overlay <- paste(rep("ab", 32), collapse = ""); deep$height <- 6
+odd_dump <- dump
+odd <- which(dump$fullNode %in% TRUE & !(dump$overlay %in% chain$stakes$overlay))[1]
+odd_dump$overlay[odd] <- NA; odd_dump$overlay_binary[odd] <- NA
+with_deep <- nbhood_members(rbind(chain$stakes, deep), latest, odd_dump, 4)
+check("map - a stake deeper than the radius and a node without an overlay are left out", !(deep$overlay %in% with_deep$overlay) &&
+        !anyNA(with_deep$nbhood) && nrow(with_deep) == nrow(nbhood_members(chain$stakes, latest, dump, 4)) - 1)
+check("map - at a radius equal to its height the stake is listed in every nbhood",
+      sum(nbhood_members(rbind(chain$stakes, deep), latest, dump, 6)$overlay == deep$overlay) == 2^6)
 
 # last drawn: for each nbhood, the latest anchor whose first bits name it, against the raw fixture
 raw_redis <- chain_fixture$logs[[tolower(chain_contracts$redistribution$address)]]
@@ -450,8 +467,8 @@ testServer(server, {
         grepl("whole network's payouts", explainer, fixed = TRUE) && !grepl("whole network", details, fixed = TRUE))
   check("map - details give the expected earnings", grepl(sprintf("about %s xBZZ per 30 days", format_number(round(expected_earn$per_30_days, 2))), details, fixed = TRUE), details)
   check("map - the explanation gives the win share", grepl(sprintf("win %.1f%% of the time", 100 * expected_earn$win_share), explainer, fixed = TRUE), explainer)
-  session$setInputs(earningsStake = 0)
-  check("map - a stake of 0 shows a message", grepl("Enter a stake above 0", output_or_error(output$nbhood_selected_details)))
+  session$setInputs(earningsStake = 5)
+  check("map - a stake below the minimum shows a message", grepl("at least 10 xBZZ", output_or_error(output$nbhood_selected_details)))
   session$setInputs(earningsStake = 10)
   output$nbhood_nodes
   listed <- captured("nbhood_nodes")

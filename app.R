@@ -266,7 +266,8 @@ stakes_table_header <- function() header_with_tooltips(stakes_table_columns)
 nbhood_nodes_columns <- c(
   "Overlay" = "The node's overlay address",
   "Kind" = paste0("Staked, active: staked and revealed in the set number of days. Staked, idle: staked, no reveal in that time. ",
-                  "Full, not staked: a full node in the swarmscan dump without stake"),
+                  "Full, not staked: a full node in the swarmscan dump without stake. Idle also covers stakes that cannot play: ",
+                  "frozen, below the minimum stake, or too new"),
   "Stake (BZZ)" = "The amount deposited; empty for a node without stake",
   "Effective stake (BZZ)" = "What the redistribution game counts: the committed stake at today's price, capped at the deposit, and 0 while frozen",
   "Height" = "Reserve doubling: the node stores 2^height neighbourhoods and is listed in each of them",
@@ -403,13 +404,15 @@ ui <-
                 "that revealed in the redistribution game within the days set in the sidebar. 4 (light green) is the number ",
                 "of matching reveals per round the price oracle aims for: fewer raise the price, more (dark green) lower it ",
                 "and spread the rewards thinner. A node with reserve doubling stores ",
-                "several neighbourhoods and counts in each. Point at a tile for its counts; click it to list its nodes."),
+                "several neighbourhoods and counts in each, placed with the sidebar radius; this matches the contract when ",
+                "the radius is the storage depth nodes report. A staked node whose reserve doubling is greater than the radius ",
+                "cannot play at that radius and is left out. Point at a tile for its counts; click it to list its nodes."),
               p("Light and ultra-light nodes are not shown: swarmscan does not list them, and their place in the ",
                 "network cannot be worked out from chain data."),
               layout_column_wrap(
                 width = 1/2, fill = FALSE,
                 checkboxInput("showUnstaked", "Show non-staking nodes (full nodes without stake, from swarmscan)", value = FALSE, width = "100%"),
-                numericInput("earningsStake", "Stake for the earnings estimate (xBZZ)", value = 10, min = 0.1, step = 1, width = "100%")
+                numericInput("earningsStake", "Stake for the earnings estimate (xBZZ)", value = 10, min = min_stake_bzz, step = 1, width = "100%")
               ),
               textOutput("nbhood_hover_text"),
               plotOutput("nbhoodMap", height = "640px", hover = hoverOpts("nbhoodHover", delay = 100, delayType = "throttle"),
@@ -709,7 +712,7 @@ server <- function(input, output, session) {
     radius <- input$storageRadius
     plot <- ggplot(tiles, aes(x = x, y = -y, fill = class)) +
       geom_tile(colour = swarm_colours$bg, linewidth = if (radius <= 10) 0.6 else 0) +
-      scale_fill_manual(values = c("0" = swarm_colours$unreachable, "1" = swarm_colours$orange, "2" = swarm_colours$error,
+      scale_fill_manual(values = c("No node" = swarm_colours$line, "0" = swarm_colours$unreachable, "1" = swarm_colours$orange, "2" = swarm_colours$error,
                                    "3" = "#7aa6c2", "4" = swarm_colours$mint, "5 or more" = "#0a8a68"),
                         drop = FALSE,
                         name = if (isTRUE(input$showUnstaked)) "Staked and active, plus full\nnodes without stake" else "Staked and active") +
@@ -721,7 +724,7 @@ server <- function(input, output, session) {
             legend.title = element_text(colour = swarm_colours$muted, family = "mono"))
     # the count in each tile while the tiles are big enough to read it (up to 1,024 tiles)
     # dark text on the light tiles, light text on the dark green ones
-    if (radius <= 10) plot <- plot + geom_text(aes(label = shown, colour = ifelse(class == "5 or more", swarm_colours$text, swarm_colours$bg)),
+    if (radius <= 10) plot <- plot + geom_text(aes(label = shown, colour = ifelse(class %in% c("5 or more", "No node"), swarm_colours$text, swarm_colours$bg)),
                                                family = "mono", size = if (radius <= 8) 4 else 3) + scale_colour_identity()
     plot
   # the map keeps square tiles, so it does not fill the whole image; the rest takes the page colour
@@ -748,7 +751,8 @@ server <- function(input, output, session) {
   # the set amount could expect to earn there
   nbhood_details <- reactive({
     shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
-    shiny::validate(shiny::need(isTRUE(input$earningsStake > 0), "Enter a stake above 0 for the earnings estimate."))
+    shiny::validate(shiny::need(isTRUE(input$earningsStake >= min_stake_bzz),
+                                sprintf("Enter a stake of at least %s xBZZ, the Staking contract's minimum, for the earnings estimate.", format_number(min_stake_bzz))))
     chain <- chain_data_polled()
     paid <- pot_per_day(chain, input$activeDays)
     others <- nbhood_stake_weight(nbhood_members_reactive(), selected_nbhood())
@@ -790,7 +794,7 @@ server <- function(input, output, session) {
   output$nbhood_nodes <- DT::renderDataTable({
     shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
     members <- nbhood_members_reactive()
-    shown <- members[members$nbhood == selected_nbhood(), ]
+    shown <- members[members$nbhood %in% selected_nbhood(), ]
     if (!isTRUE(input$showUnstaked)) shown <- shown[shown$kind != node_kinds[["unstaked"]], ]
     shown <- shown[order(match(shown$kind, node_kinds), -shown$effective_stake), ]
     data.frame(overlay = shown$overlay, kind = shown$kind,
