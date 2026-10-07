@@ -686,6 +686,11 @@ check("storage - an old dump falls back to the whole reserve", old_row$measure =
 doubled <- data.frame(overlay = c("a", "b", "c"))
 doubled$statusSnapshot <- data.frame(reserveSizeWithinRadius = c(0.9, 1.8, 7.2) * 2^22, storageRadius = c(9, 8, 6), committedDepth = 9)
 doubled_row <- summarise_dump(doubled, "2026-10-07")
+# most of these nodes are doubled, so the most common storage radius would be below the network's 9 (#71)
+check("storage - the radius is the most common committed depth, not storage radius", doubled_row$radius_mode == 9 &&
+        identical(typical_storage_radius(doubled), 9L))
+check("storage - without committedDepth the radius is the most common storage radius", old_row$radius_mode == 10 &&
+        identical(typical_storage_radius(old_dump), 10L))
 check("storage - doubled nodes: fullness against their own capacity, stored data unchanged",
       isTRUE(all.equal(doubled_row$fullness_p90, 0.9)) && isTRUE(all.equal(doubled_row$stored_tib, 0.9 * 2^22 * 4096 * 2^9 / 2^40)),
       paste(doubled_row$fullness_p90, doubled_row$stored_tib))

@@ -185,12 +185,18 @@ prepare_nodes_data <- function(swarmscan_data) {
   nodes_data
 }
 
-# the storage radius most nodes report, used as the default radius; NULL if no node reports one
+# the network's radius, used as the default radius: the most common committed depth (storage
+# radius + reserve doubling; doubled nodes report a storage radius d lower), or the most common
+# storage radius in dumps without committedDepth. NULL if no node reports one
 typical_storage_radius <- function(nodes_data) {
-  radius <- nodes_data[["statusSnapshot"]][["storageRadius"]]
-  radius <- radius[!is.na(radius) & radius > 0]
-  if (length(radius) == 0) return(NULL)
-  as.integer(names(which.max(table(radius))))
+  status <- nodes_data[["statusSnapshot"]]
+  radius <- status[["storageRadius"]]
+  if (is.null(radius)) return(NULL)
+  committed <- status[["committedDepth"]]
+  depth <- if (is.null(committed)) radius else ifelse(is.na(committed), radius, pmax(committed, radius))
+  depth <- depth[!is.na(radius) & radius > 0]
+  if (length(depth) == 0) return(NULL)
+  as.integer(names(which.max(table(depth))))
 }
 
 ### shared data cache
