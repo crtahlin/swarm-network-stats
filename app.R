@@ -237,6 +237,10 @@ source("R/chain.R", local = TRUE)
 source("R/nbhood_map.R", local = TRUE)
 # the Price projection
 source("R/price_model.R", local = TRUE)
+# stored data over time (the Data and Storage growth tabs); the history is built by
+# scripts/build_storage_history.R and read once when the app starts
+source("R/storage_history.R", local = TRUE)
+storage_history_data <- read_storage_history()
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -335,6 +339,19 @@ swarm_plot_theme <- theme(
   axis.text = element_text(colour = "#aab2bc", family = "mono", size = 11),
   axis.title = element_text(colour = swarm_colours$text, family = "mono", size = 13),
   axis.ticks = element_line(colour = swarm_colours$line)
+)
+
+
+# larger, bold text for the wide plots (Price projection, Storage growth); the shared theme's sizes
+# read too small there
+swarm_readable_text <- theme(
+  axis.text = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 15),
+  axis.title.y = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16),
+  plot.caption = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 14),
+  legend.position = "top", legend.background = element_rect(fill = swarm_colours$bg),
+  legend.key = element_rect(fill = swarm_colours$bg),
+  legend.text = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 14),
+  legend.title = element_blank()
 )
 
 
@@ -454,6 +471,28 @@ ui <-
                            class = "btn-sm btn-outline-primary"),
               br(), br(),
               plotOutput("pricePlot", height = "520px")),
+
+    ###
+    nav_panel("Storage growth",
+              div(class = "section-label", "Stored data and the storage radius"),
+              p("Stored data is estimated from each node's reserve: the reserve within its radius times the number of ",
+                "neighbourhoods, taken as the median over the nodes that report it. The history has one value a day from ",
+                "swarmscan's archive of network dumps, plus today's. The fitted curves are projections of past growth, ",
+                "not forecasts. The storage radius rises when reserves are full, at the network's capacity for the radius set ",
+                "in the sidebar, and falls when they are less than half full."),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                numericInput("fitDays", "Fit over the last (days)", value = 90, min = 7, max = 1500, step = 1),
+                numericInput("growthHorizon", "Project ahead (days)", value = 180, min = 1, max = 1095, step = 1)
+              ),
+              textOutput("growth_summary", container = p),
+              plotOutput("growthPlot", height = "560px"),
+              br(),
+              div(class = "section-label", "Reserve fullness"),
+              p("How full the nodes' reserves are, as a share of one reserve (2^22 chunks) per neighbourhood: a node with ",
+                "reserve doubling counts per neighbourhood it stores. At 100% nodes move to the next radius; below 50% they ",
+                "fall back. Each change of radius halves or doubles the share."),
+              plotOutput("fullnessPlot", height = "420px")),
 
     # ###
     # nav_panel("Nbhood counts",
@@ -931,10 +970,86 @@ server <- function(input, output, session) {
       labs(x = NULL, y = "PLUR per chunk per block",
            caption = paste("White: price updates on chain. Orange, dashed: projection.",
                            if (isTRUE(input$extraNodes > 0)) "Grey, dashed: projection without the extra nodes." else "")) +
-      # larger, bold text: the plot is wide, and the shared theme's sizes read too small here
-      theme(axis.text = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 15),
-            axis.title.y = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 16),
-            plot.caption = element_text(colour = swarm_colours$text, family = "mono", face = "bold", size = 14))
+      swarm_readable_text
+  }, bg = swarm_colours$bg)
+
+  ###############
+  # STORAGE GROWTH
+  ###############
+  # the saved history plus today's value from the current swarmscan data
+  # days with too few reporting nodes are left out
+  growth_history <- reactive({
+    today <- summarise_dump(swarm_data()$nodes, as.Date(current_time()))
+    history <- rbind(storage_history_data[storage_history_data$date != today$date, names(today)], today)
+    history <- history[history$nodes_reporting >= min_reporting_nodes, ]
+    history[order(history$date), ]
+  })
+  growth_fit <- reactive({
+    shiny::validate(shiny::need(isTRUE(input$fitDays >= 7), "Fit over 7 days or more."))
+    shiny::validate(shiny::need(isTRUE(input$growthHorizon >= 1), "Project at least 1 day ahead."))
+    shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
+    history <- growth_history()
+    fit <- fit_growth(history, input$fitDays)
+    radius <- input$storageRadius
+    lines <- data.frame(level = c(capacity_tib(radius), capacity_tib(radius + 1), capacity_tib(radius) / 2),
+                        label = c(sprintf("radius rises to %d", radius + 1), sprintf("radius rises to %d", radius + 2),
+                                  sprintf("radius falls to %d", radius - 1)))
+    list(history = history, fit = fit, lines = lines, radius = radius)
+  })
+
+  output$growth_summary <- renderText({
+    g <- growth_fit()
+    now <- tail(g$history, 1)
+    head_text <- sprintf("Stored now: %s TiB, with the median reserve %.0f%% full. Capacity at radius %d: %s TiB.",
+                         format_number(round(now$stored_tib, 2)), 100 * now$fullness_median, g$radius, format_number(capacity_tib(g$radius)))
+    if (is.null(g$fit)) return(paste(head_text, "There is not enough history in the fit window to fit a curve."))
+    describe <- function(kind, rate_text) {
+      crossings <- vapply(seq_len(nrow(g$lines)), function(i) {
+        date <- crossing_date(g$fit, g$lines$level[i], kind)
+        sprintf("%s on %s", g$lines$label[i], if (is.na(date)) "no date (not reached)" else format(date, "%Y-%m-%d"))
+      }, "")
+      paste0(rate_text, ": ", paste(crossings, collapse = "; "), ".")
+    }
+    slope <- stats::coef(g$fit$linear)[2]
+    growth <- 100 * (exp(stats::coef(g$fit$exponential)[2]) - 1)
+    paste(head_text, sprintf("Projection from the last %s days.", format_number(input$fitDays)),
+          describe("linear", sprintf("Straight line, %+.3f TiB a day", slope)),
+          describe("exponential", sprintf("Exponential, %+.2f%% a day", growth)))
+  })
+
+  output$growthPlot <- renderPlot({
+    g <- growth_fit()
+    plot <- ggplot() +
+      geom_hline(data = g$lines, aes(yintercept = level), colour = swarm_colours$muted, linetype = "dotted", linewidth = 0.8) +
+      geom_text(data = g$lines, aes(x = min(g$history$date), y = level, label = label), colour = swarm_colours$text,
+                family = "mono", fontface = "bold", size = 5, hjust = 0, vjust = -0.5) +
+      geom_line(data = g$history[g$history$measure == "within radius", ], aes(x = date, y = stored_tib, colour = "Stored data"), linewidth = 1) +
+      geom_line(data = g$history[g$history$measure == "whole reserve", ], aes(x = date, y = stored_tib, colour = "Stored data, older measure"),
+                linewidth = 1, linetype = "dotdash")
+    if (!is.null(g$fit)) {
+      plot <- plot + geom_line(data = project_growth(g$fit, input$growthHorizon), aes(x = date, y = stored_tib, colour = fit),
+                               linetype = "dashed", linewidth = 1.1)
+    }
+    plot + scale_colour_manual(values = c("Stored data" = swarm_colours$text, "Stored data, older measure" = swarm_colours$muted,
+                                          "Straight line" = swarm_colours$orange, "Exponential" = swarm_colours$mint)) +
+      scale_y_continuous(labels = function(x) format_number(x)) +
+      swarm_plot_theme + swarm_readable_text +
+      labs(x = NULL, y = "Stored data (TiB)",
+           caption = paste("Dashed: fits of the last days set above, extended to the horizon (projections). Dotted: radius changes.",
+                           "Grey: days before nodes reported their reserve within radius; their whole reserve overstates the stored data.",
+                           sep = "\n"))
+  }, bg = swarm_colours$bg)
+
+  output$fullnessPlot <- renderPlot({
+    history <- growth_fit()$history
+    long <- rbind(data.frame(date = history$date, share = 100 * history$fullness_median, series = "Median"),
+                  data.frame(date = history$date, share = 100 * history$fullness_p90, series = "90th percentile"))
+    ggplot(long, aes(x = date, y = share, colour = series)) +
+      geom_hline(yintercept = c(50, 100), colour = swarm_colours$muted, linetype = "dotted", linewidth = 0.8) +
+      geom_line(linewidth = 1) +
+      scale_colour_manual(values = c("Median" = swarm_colours$text, "90th percentile" = swarm_colours$orange)) +
+      swarm_plot_theme + swarm_readable_text +
+      labs(x = NULL, y = "Reserve full (%)")
   }, bg = swarm_colours$bg)
 
   # table of staked overlays from the chain, with each one's latest reveal in the window
@@ -1057,33 +1172,9 @@ server <- function(input, output, session) {
   # Calculate amount of storage on Swarm
   ##############
   output$storage_taken <- renderText({
-    
-    # Save reserve within radius and radius to data frame
-    nodes_data <- swarm_data()$nodes
-    storage_data <- data.frame(
-      reserveWithinRadius = nodes_data$statusSnapshot$reserveSizeWithinRadius,
-      storageradius = nodes_data$statusSnapshot$storageRadius)
-    
-    # Remove empty lines (NA or 0)
-    tmp <- storage_data[!(is.na(storage_data$reserveWithinRadius) | 
-                            is.na(storage_data$storageradius)), ]
-    clean_storage_data <- tmp[!(tmp$reserveWithinRadius == 0 | 
-                                  tmp$storageradius == 0), ]
-    
-    # Sum up all the storage data and take the average
-    bytesStored <- (clean_storage_data$reserveWithinRadius * 4096) * 
-      (2 ^ clean_storage_data$storageradius)
-    
-    # Take median value
-    shiny::validate(shiny::need(length(bytesStored) > 0,
-                                "No node reports its reserve size, so the stored data cannot be estimated."))
-    medianBytesStored <- median(bytesStored)
-    
-    # Convert to TiB (2^40 bytes)
-    medianTiBStored <- medianBytesStored / (1024 * 1024 * 1024 * 1024)
-    
-    # return value
-    paste(format_number(medianTiBStored), "TiB")
+    stored <- estimate_stored_tib(swarm_data()$nodes)
+    shiny::validate(shiny::need(!is.na(stored), "No node reports its reserve size, so the stored data cannot be estimated."))
+    paste(format_number(stored), "TiB")
   })
 }
 

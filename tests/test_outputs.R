@@ -39,6 +39,8 @@ suppressWarnings(suppressPackageStartupMessages(eval(parse(text = src))))
 # the chain answers from tests/fixtures/chain-sample.json; its window is 6 hours, as recorded
 source("tests/fake_rpc.R")
 chain_window_days <- 0.25
+# the saved storage history changes as it is extended; the tests use their own
+storage_history_data <- read_storage_history(tempfile())
 
 passed <- 0; failed <- 0
 check <- function(label, ok, detail = "") {
@@ -76,7 +78,7 @@ expected_max_radius <- function(bits, minimum) {
 
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
-                 "price_balance", "price_balance_note", "price_balance_text",
+                 "price_balance", "price_balance_note", "price_balance_text", "growth_summary", "growthPlot", "fullnessPlot",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -101,7 +103,7 @@ for (variant in variants) {
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
-                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -566,6 +568,66 @@ testServer(server, {
   check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
 })
 rm(updateSliderInput)
+
+### Storage growth (R/storage_history.R)
+prepared <- prepare_nodes_data(fixture)
+status <- prepared$statusSnapshot
+usable <- !is.na(status$reserveSizeWithinRadius) & !is.na(status$storageRadius) & status$reserveSizeWithinRadius > 0 & status$storageRadius > 0
+check("storage - the estimate is the median of reserve x 4096 x 2^radius, in TiB",
+      isTRUE(all.equal(estimate_stored_tib(prepared),
+                       median(status$reserveSizeWithinRadius[usable] * 4096 * 2^status$storageRadius[usable]) / 2^40)))
+row <- summarise_dump(prepared, "2026-09-30")
+check("storage - one history row from a dump", row$measure == "within radius" && row$nodes == nrow(prepared) &&
+        row$nodes_reporting == sum(usable) && row$radius_mode == as.integer(names(which.max(table(status$storageRadius[usable])))) &&
+        isTRUE(all.equal(row$fullness_median, median(status$reserveSizeWithinRadius[usable]) / 2^22)))
+old_dump <- data.frame(overlay = c("a", "b", "c"))
+old_dump$statusSnapshot <- data.frame(reserveSize = c(2^21, 2^22, 0), storageRadius = c(10, 10, 0))
+old_row <- summarise_dump(old_dump, "2024-01-20")
+check("storage - an old dump falls back to the whole reserve", old_row$measure == "whole reserve" && old_row$nodes_reporting == 2 &&
+        isTRUE(all.equal(old_row$stored_tib, median(c(2^21, 2^22) * 4096 * 2^10) / 2^40)))
+doubled <- data.frame(overlay = c("a", "b", "c"))
+doubled$statusSnapshot <- data.frame(reserveSizeWithinRadius = c(0.9, 1.8, 7.2) * 2^22, storageRadius = 9, committedDepth = c(9, 10, 12))
+doubled_row <- summarise_dump(doubled, "2026-10-07")
+check("storage - a doubled node's reserve counts per neighbourhood", isTRUE(all.equal(doubled_row$fullness_p90, 0.9)) &&
+        isTRUE(all.equal(doubled_row$stored_tib, 0.9 * 2^22 * 4096 * 2^9 / 2^40)))
+check("storage - capacity at radius 9 is 8 TiB", capacity_tib(9) == 8)
+check("storage - no history file gives an empty history", nrow(read_storage_history(tempfile())) == 0)
+# a synthetic history: 5 TiB growing by 0.01 TiB a day, plus older days of the old measure that the fit ignores
+days <- seq(as.Date("2026-06-01"), as.Date("2026-10-06"), by = "day")
+synthetic <- data.frame(date = days, measure = "within radius", nodes = 5000, nodes_reporting = 2400, radius_mode = 9L,
+                        reserve_median = 3e6, fullness_median = 0.7 + 0.002 * seq_along(days), fullness_p90 = 0.8,
+                        stored_tib = 5 + 0.01 * as.numeric(days - days[1]))
+older <- synthetic[1:10, ]; older$date <- older$date - 400; older$measure <- "whole reserve"; older$stored_tib <- 99
+synthetic <- rbind(older, synthetic)
+fit <- fit_growth(synthetic, 90)
+check("storage - the straight-line fit finds the growth", isTRUE(all.equal(unname(stats::coef(fit$linear)[2]), 0.01)))
+expected_cross <- days[1] + (8 - 5) / 0.01
+check("storage - the straight line crosses 8 TiB on the right day", identical(crossing_date(fit, 8, "linear"), expected_cross),
+      format(crossing_date(fit, 8, "linear")))
+check("storage - a growing curve never reaches a lower level", is.na(crossing_date(fit, 4, "linear")))
+check("storage - the exponential fit crosses later points at increasing dates",
+      crossing_date(fit, 16, "exponential") > crossing_date(fit, 8, "exponential"))
+check("storage - the fit ignores days of the older measure", fit$from >= days[1])
+thin <- synthetic; thin$nodes_reporting[nrow(thin)] <- 5; thin$stored_tib[nrow(thin)] <- 500
+check("storage - the fit ignores days with too few reporting nodes", isTRUE(all.equal(unname(stats::coef(fit_growth(thin, 90)$linear)[2]), 0.01)))
+check("storage - a dump without status is marked", summarise_dump(data.frame(overlay = "a"), "2026-09-30")$measure == "no status")
+check("storage - too little history gives no fit", is.null(fit_growth(synthetic[nrow(synthetic) - 1:0, ], 90)))
+projection <- project_growth(fit, 30)
+check("storage - the projection reaches the horizon for both fits", max(projection$date) == max(days) + 30 && setequal(projection$fit, c("Straight line", "Exponential")))
+
+storage_history_data <- synthetic
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
+                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180)
+  summary <- output$growth_summary
+  check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
+          grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date", summary, fixed = TRUE), summary)
+  check("growth tab - plots render", !inherits(output_or_error(output$growthPlot), "output_error") &&
+          !inherits(output_or_error(output$fullnessPlot), "output_error"))
+  session$setInputs(fitDays = 3)
+  check("growth tab - a fit window under 7 days shows a message", grepl("Fit over 7 days", output_or_error(output$growth_summary)))
+})
+storage_history_data <- read_storage_history(tempfile())
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)

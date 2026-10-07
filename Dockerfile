@@ -25,3 +25,4 @@ WORKDIR /srv/shiny-server/
 
 COPY ./app.R ./app.R
 COPY ./R ./R
+COPY ./data ./data
