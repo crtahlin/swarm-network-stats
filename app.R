@@ -508,7 +508,8 @@ ui <-
               div(class = "section-label", "Reserve fullness"),
               p("The chunks within each node's radius as a share of its reserve capacity (2^22 chunks, or 2^(22+d) with reserve ",
                 "doubling d). A bee node raises its radius when this goes above 100%, and lowers it below 50% once pull-sync has ",
-                "stopped. Each change of radius halves or doubles the share."),
+                "stopped. Each change of radius halves or doubles the share. Before nodes reported their reserve within radius ",
+                "(March 2024), the line shows the whole reserve, which overstates the share."),
               div(style = "display: flex; justify-content: space-between; gap: 1em;",
                   textOutput("fullnessPlot_hover", container = p),
                   actionLink("fullnessPlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
@@ -1074,7 +1075,8 @@ server <- function(input, output, session) {
       sprintf("%s on %s", g$lines$label[i], if (is.na(date)) "no date (not reached)" else format(date, "%Y-%m-%d"))
     }
     describe <- function(kind, rate_text) {
-      crossings <- vapply(seq_len(nrow(g$lines)), function(i) crossing_text(i, crossing_date(g$fit, g$lines$level[i], kind)), "")
+      crossings <- vapply(seq_len(nrow(g$lines)), function(i) crossing_text(i, crossing_date(g$fit, g$lines$level[i], kind,
+                                                                                                        if (i == 3) "down" else "up")), "")
       paste0(rate_text, ": ", paste(crossings, collapse = "; "), ".")
     }
     slope <- stats::coef(g$fit$linear)[2]

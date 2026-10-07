@@ -615,7 +615,10 @@ check("storage - the straight-line fit finds the growth", isTRUE(all.equal(unnam
 expected_cross <- days[1] + (8 - 5) / 0.01
 check("storage - the straight line crosses 8 TiB on the right day", identical(crossing_date(fit, 8, "linear"), expected_cross),
       format(crossing_date(fit, 8, "linear")))
-check("storage - a growing curve never reaches a lower level", is.na(crossing_date(fit, 4, "linear")))
+check("storage - a growing curve never reaches a lower level", is.na(crossing_date(fit, 4, "linear", "down")))
+# a level the fitted line passed inside the fit window, but the measured data has not: the day after the window
+check("storage - a level the fit already passed is reached the day after the fit window",
+      identical(crossing_date(fit, 4, "linear", "up"), fit$to + 1))
 check("storage - the exponential fit crosses later points at increasing dates",
       crossing_date(fit, 16, "exponential") > crossing_date(fit, 8, "exponential"))
 check("storage - the fit ignores days of the older measure", fit$from >= days[1])

@@ -26,9 +26,9 @@ from <- if (length(args) >= 1) as.Date(args[1]) else first_archived_day
 to <- if (length(args) >= 2) as.Date(args[2]) else Sys.Date() - 1
 
 dir.create(dirname(storage_history_file), showWarnings = FALSE)
-# days with fewer than min_reporting_nodes reporting nodes are fetched again: their row is dropped
+# days in the range with fewer than min_reporting_nodes reporting nodes are fetched again: their row is dropped
 history <- read_storage_history()
-thin <- history$nodes_reporting < min_reporting_nodes
+thin <- history$nodes_reporting < min_reporting_nodes & history$date >= from & history$date <= to
 if (any(thin)) {
   cat(sprintf("fetching %d thin days again\n", sum(thin)))
   kept <- history[!thin, ]

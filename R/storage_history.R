@@ -89,18 +89,21 @@ project_growth <- function(fit, horizon_days) {
         data.frame(date = dates, stored_tib = exp(stats::coef(fit$exponential)[1] + stats::coef(fit$exponential)[2] * days), fit = "Exponential"))
 }
 
-# the first date after the last data point at which a fitted curve reaches a level, or NA if it
-# never does (a flat or shrinking curve never reaches a higher level, nor a growing one a lower)
-crossing_date <- function(fit, level, kind = c("linear", "exponential")) {
+# the first date after the last data point at which a fitted curve, rising ("up") or falling
+# ("down"), reaches a level; NA if it never does (a flat or shrinking curve never reaches a higher
+# level, nor a growing one a lower). If the curve already passed the level within the fit window,
+# the date is the day after the window: the caller tells from the measured data whether the level
+# has actually been passed
+crossing_date <- function(fit, level, kind = c("linear", "exponential"), direction = c("up", "down")) {
   kind <- match.arg(kind)
+  direction <- match.arg(direction)
   coefs <- stats::coef(fit[[kind]])
   value <- if (kind == "linear") level else log(level)
-  if (!is.finite(value) || coefs[2] == 0) return(as.Date(NA))
+  if (!is.finite(value) || coefs[2] == 0 || (coefs[2] > 0) != (direction == "up")) return(as.Date(NA))
   # the day the curve crosses, as a whole day (the small tolerance keeps rounding error from
   # turning an exact crossing into the day before)
   day <- floor(unname((value - coefs[1]) / coefs[2]) + 1e-9)
-  if (day <= as.numeric(fit$to)) return(as.Date(NA))
-  as.Date(day, origin = "1970-01-01")
+  as.Date(max(day, as.numeric(fit$to) + 1), origin = "1970-01-01")
 }
 
 ### an assumed growth rate, as a what-if next to the fits
