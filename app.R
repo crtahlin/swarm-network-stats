@@ -416,8 +416,8 @@ ui <-
                          click = "nbhoodClick"),
               br(),
               textOutput("nbhood_selected_text"),
-              textOutput("nbhood_selected_details"),
-              br(),
+              textOutput("nbhood_selected_details", container = p),
+              textOutput("nbhood_earnings_explainer", container = p),
               DT::dataTableOutput("nbhood_nodes")),
 
     ###
@@ -744,32 +744,47 @@ server <- function(input, output, session) {
     if (is.null(selected_nbhood())) "Click a neighbourhood to list its nodes." else paste("Nodes in neighbourhood", selected_nbhood())
   })
 
-  # for the clicked neighbourhood: when it was last drawn, and what a new node staking the set
-  # amount could expect to earn there
-  output$nbhood_selected_details <- renderText({
+  # for the clicked neighbourhood: when it was last drawn, what it got, and what a new node staking
+  # the set amount could expect to earn there
+  nbhood_details <- reactive({
     shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
     shiny::validate(shiny::need(isTRUE(input$earningsStake > 0), "Enter a stake above 0 for the earnings estimate."))
     chain <- chain_data_polled()
-    radius <- input$storageRadius
-    drawn <- last_drawn(chain$anchors, chain$truths, selected_nbhood())
-    drawn_text <- if (is.na(drawn$round)) {
-      sprintf("Not drawn in the last %s days (rounds in which nobody revealed leave no record).", format_number(chain_window_days))
-    } else {
-      sprintf("Last drawn in round %s, %s UTC (%s).", format_number(drawn$round), format(drawn$time, "%Y-%m-%d %H:%M", tz = "UTC"),
-              if (drawn$claimed) "claimed" else "not claimed")
-    }
     paid <- pot_per_day(chain, input$activeDays)
     others <- nbhood_stake_weight(nbhood_members_reactive(), selected_nbhood())
-    earn <- expected_earnings(paid, radius, input$earningsStake, others)
-    paste(drawn_text, sprintf(paste(
-      "A new node staking %s xBZZ here could expect about %s xBZZ per 30 days (%s%% of its stake a year).",
-      "Winners were paid %s xBZZ a day over the last %s days; at radius %d a neighbourhood is drawn in 1 of %s rounds,",
-      "and the node would win %.1f%% of the rounds its neighbourhood is drawn in, against %s xBZZ of stake (weighted for reserve doubling) from the active staked nodes already here.",
-      "Assumes all of them reveal a matching hash, and that payouts stay as they were."),
-      format_number(input$earningsStake), format_number(round(earn$per_30_days, 2)),
-      format_number(round(100 * earn$per_30_days * 365 / 30 / input$earningsStake)),
-      format_number(round(paid)), format_number(input$activeDays), radius, format_number(2^radius),
-      100 * earn$win_share, format_number(round(others, 1))))
+    list(chain = chain, paid = paid, others = others,
+         drawn = last_drawn(chain$anchors, chain$truths, selected_nbhood()),
+         history = nbhood_history(chain, selected_nbhood(), input$activeDays),
+         earn = expected_earnings(paid, input$storageRadius, input$earningsStake, others))
+  })
+
+  # first paragraph: the facts and the estimate
+  output$nbhood_selected_details <- renderText({
+    d <- nbhood_details()
+    drawn_text <- if (is.na(d$drawn$round)) {
+      sprintf("Not drawn in the last %s days (rounds in which nobody revealed leave no record).", format_number(chain_window_days))
+    } else {
+      sprintf("Last drawn in round %s, %s UTC (%s).", format_number(d$drawn$round), format(d$drawn$time, "%Y-%m-%d %H:%M", tz = "UTC"),
+              if (d$drawn$claimed) "claimed" else "not claimed")
+    }
+    paste(drawn_text,
+      sprintf("Over the last %s days it was drawn in %s rounds, and their winners were paid %s xBZZ in total (the average per neighbourhood is %s xBZZ).",
+              format_number(input$activeDays), format_number(d$history$rounds), format_number(round(d$history$paid, 1)),
+              format_number(round(d$paid * input$activeDays / 2^input$storageRadius, 1))),
+      sprintf("A new node staking %s xBZZ here could expect about %s xBZZ per 30 days (%s%% of its stake a year).",
+              format_number(input$earningsStake), format_number(round(d$earn$per_30_days, 2)),
+              format_number(round(100 * d$earn$per_30_days * 365 / 30 / input$earningsStake))))
+  })
+
+  # second paragraph: how the estimate is made
+  output$nbhood_earnings_explainer <- renderText({
+    d <- nbhood_details()
+    sprintf(paste(
+      "How the estimate is made: it uses the whole network's payouts, %s xBZZ a day over the last %s days, shared over %s neighbourhoods at radius %d, each drawn equally often in the long run.",
+      "When this neighbourhood is drawn, the node would win %.1f%% of the time, against %s xBZZ of stake (weighted for reserve doubling) from the active staked nodes already here.",
+      "It assumes all of them reveal a matching hash, and that payouts stay as they were."),
+      format_number(round(d$paid)), format_number(input$activeDays), format_number(2^input$storageRadius), input$storageRadius,
+      100 * d$earn$win_share, format_number(round(d$others, 1)))
   })
 
   output$nbhood_nodes <- DT::renderDataTable({

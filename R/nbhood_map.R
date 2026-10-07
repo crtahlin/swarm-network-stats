@@ -108,7 +108,18 @@ last_drawn <- function(anchors, truths, nbhoods) {
              claimed = anchors$round[latest] %in% truths$round)
 }
 
-# the pot paid to winners per day, in xBZZ, over the last `days` days
+# what one neighbourhood actually got over the last `days` days: the rounds in which it was drawn
+# (an anchor fell in it) and the pots paid in those rounds. A pot is paid by the claim, in the second
+# half of the round it closes, so its block gives the round
+nbhood_history <- function(chain, nbhood, days) {
+  start <- chain$head_time - days * 86400
+  anchors <- chain$anchors[chain$anchors$time >= start, ]
+  rounds <- anchors$round[substr(overlay_to_bits(anchors$anchor), 1, nchar(nbhood)) == nbhood]
+  pots <- chain$pots[chain$pots$time >= start, ]
+  list(rounds = length(rounds), paid = sum(pots$amount_bzz[(pots$block %/% round_length_blocks) %in% rounds]))
+}
+
+# the pot paid to winners per day across the whole network, in xBZZ, over the last `days` days
 pot_per_day <- function(chain, days) {
   sum(chain$pots$amount_bzz[chain$pots$time >= chain$head_time - days * 86400]) / days
 }

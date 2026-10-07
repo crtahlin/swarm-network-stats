@@ -404,6 +404,19 @@ pot_time <- vapply(raw_pot, function(l) hex_to_number(l$blockTimestamp), 0)
 pot_amount <- vapply(raw_pot, function(l) hex_to_number(substr(l$data, 67, 130)), 0) / 1e16
 recent <- pot_time >= as.numeric(chain$head_time) - 0.25 * 86400
 check("map - pot paid per day", isTRUE(all.equal(pot_per_day(chain, 0.25), sum(pot_amount[recent]) / 0.25)) && sum(recent) > 0)
+# one nbhood's history: rounds whose anchor names it, and pots paid in those rounds, from the raw fixture
+pot_block <- vapply(raw_pot, function(l) hex_to_number(l$blockNumber), 0)
+anchor_time <- vapply(raw_anchor, function(l) hex_to_number(l$blockTimestamp), 0)
+for (nb in unique(substr(anchor_bits, 1, 4))[1:3]) {
+  history <- nbhood_history(chain, nb, 0.25)
+  mine <- anchor_round[substr(anchor_bits, 1, 4) == nb & anchor_time >= as.numeric(chain$head_time) - 0.25 * 86400]
+  check(sprintf("map - nbhood %s history: rounds drawn and pots paid", nb), history$rounds == length(mine) &&
+          isTRUE(all.equal(history$paid, sum(pot_amount[recent & (pot_block %/% 152) %in% mine]))) && history$paid > 0)
+}
+# the histories of all nbhoods add up to the network's payouts in rounds with an anchor
+all_paid <- sum(vapply(nbhood_names(4), function(nb) nbhood_history(chain, nb, 0.25)$paid, 0))
+check("map - nbhood payouts add up to the network's", isTRUE(all.equal(all_paid, sum(pot_amount[recent & (pot_block %/% 152) %in% anchor_round]))))
+
 # expected earnings by hand: 1,000 xBZZ a day over 512 nbhoods, 10 xBZZ against 90 is a tenth of the wins
 earn <- expected_earnings(1000, 9, 10, 90)
 check("map - expected earnings", isTRUE(all.equal(earn$win_share, 0.1)) && isTRUE(all.equal(earn$per_30_days, 1000 * 30 / 512 * 0.1)))
@@ -429,7 +442,14 @@ testServer(server, {
   drawn_here <- last_drawn(chain_cache$data$anchors, chain_cache$data$truths, busiest$nbhood)
   expected_earn <- expected_earnings(pot_per_day(chain_cache$data, 0.25), 4, 10, nbhood_stake_weight(members, busiest$nbhood))
   check("map - details give the last draw", if (is.na(drawn_here$round)) grepl("Not drawn", details) else grepl(format_number(drawn_here$round), details, fixed = TRUE), details)
+  history_here <- nbhood_history(chain_cache$data, busiest$nbhood, 0.25)
+  check("map - details give this nbhood's own payouts", grepl(sprintf("drawn in %s rounds, and their winners were paid %s xBZZ",
+          format_number(history_here$rounds), format_number(round(history_here$paid, 1))), details, fixed = TRUE), details)
+  explainer <- output$nbhood_earnings_explainer
+  check("map - the explanation is a separate paragraph and says the payouts are network-wide",
+        grepl("whole network's payouts", explainer, fixed = TRUE) && !grepl("whole network", details, fixed = TRUE))
   check("map - details give the expected earnings", grepl(sprintf("about %s xBZZ per 30 days", format_number(round(expected_earn$per_30_days, 2))), details, fixed = TRUE), details)
+  check("map - the explanation gives the win share", grepl(sprintf("win %.1f%% of the time", 100 * expected_earn$win_share), explainer, fixed = TRUE), explainer)
   session$setInputs(earningsStake = 0)
   check("map - a stake of 0 shows a message", grepl("Enter a stake above 0", output_or_error(output$nbhood_selected_details)))
   session$setInputs(earningsStake = 10)
