@@ -76,6 +76,7 @@ expected_max_radius <- function(bits, minimum) {
 
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
+                 "price_balance", "price_balance_note", "price_balance_text",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -460,6 +461,23 @@ check("price - claimed rounds are the complete rounds with a truth", stats$claim
 check("price - matching reveals per claimed round",
       isTRUE(all.equal(stats$mean_matching, sum(chain$reveals$round %in% complete & chain$reveals$matched_truth %in% TRUE) / length(complete))))
 
+# nodes to hold the price flat: hand-countable cases
+plan <- balance_plan(rep(4, 10), 1, oracle)
+check("balance - 4 nodes everywhere needs nothing", plan$add == 0 && plan$leave == 0 && plan$moves == 0)
+check("balance - 3 nodes everywhere needs one more in each", balance_plan(rep(3, 10), 1, oracle)$add == 10)
+check("balance - 5 nodes everywhere lets one leave from each", balance_plan(rep(5, 10), 1, oracle)$leave == 10)
+check("balance - no participation is out of reach", is.na(balance_plan(rep(3, 4), 0, oracle)$add))
+check("balance - an even spread moves the nodes above the average", balance_plan(c(5, 1, 3, 3), 1, oracle)$moves == 2)
+# the step per matching reveal is almost constant, so the count is close to 4 / q per neighbourhood minus today's nodes
+counts <- c(rep(1, 40), rep(2, 60), rep(3, 250), rep(4, 200), rep(6, 62))
+for (q in c(1, 0.87, 0.6)) {
+  plan <- balance_plan(counts, q, oracle)
+  check(sprintf("balance - nodes to add at q = %.2f is about 4 / q per neighbourhood less today's", q),
+        abs(plan$add - (4 / q * length(counts) - sum(counts))) <= 3, paste(plan$add, 4 / q * length(counts) - sum(counts)))
+  check(sprintf("balance - at q = %.2f the even spread changes the price by under 0.05%% a day", q),
+        abs(drift_percent(rounds_per_day(5) * plan$even) - drift_percent(rounds_per_day(5) * plan$now)) < 0.05)
+}
+
 # the button's slider update is recorded instead of sent to a browser
 slider_updates <- list()
 updateSliderInput <- function(session, inputId, ...) slider_updates[[length(slider_updates) + 1]] <<- list(id = inputId, value = list(...)$value)
@@ -467,6 +485,13 @@ testServer(server, {
   session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
                     participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
   n <- nbhood_tiles(nbhood_members(chain_cache$data$stakes, last_reveals(chain_cache$data, 0.25), swarm_cache$data$nodes, 4), 4, FALSE)$active
+  observed <- observed_drift(chain_cache$data$prices, chain_cache$data$price, chain_cache$data$head_time, 0.25)
+  fitted <- fit_participation(n, observed, oracle, 5)
+  output$price_calibration
+  check("price tab - the participation starts at the fitted value",
+        length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
+        paste("fitted", fitted, "updates", length(slider_updates)))
+  slider_updates <<- list()
   check("price tab - model change matches the model", output$price_model_change == sprintf("%+.2f%%", drift_percent(model_drift(n, 1, oracle, 5))))
   full_change <- output$price_model_change
   session$setInputs(participation = 50)
@@ -474,13 +499,16 @@ testServer(server, {
   session$setInputs(participation = 100, extraNodes = 3)
   check("price tab - extra nodes lower the change", as.numeric(sub("%", "", output$price_model_change)) <= as.numeric(sub("%", "", full_change)))
   check("price tab - the plot renders with the comparison line", !inherits(output_or_error(output$pricePlot), "output_error"))
-  session$setInputs(extraNodes = 0, useFittedParticipation = 1)
-  observed <- observed_drift(chain_cache$data$prices, chain_cache$data$price, chain_cache$data$head_time, 0.25)
-  fitted <- fit_participation(n, observed, oracle, 5)
-  check("price tab - the button sets the fitted participation",
-        if (is.na(fitted)) length(slider_updates) == 0 else
-          length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
+  plan <- balance_plan(n, 1, oracle)
+  check("price tab - nodes to hold the price flat", output$price_balance ==
+          (if (plan$add > 0) paste0("+", format_number(plan$add)) else if (plan$leave > 0) paste0("-", format_number(plan$leave)) else "0"),
+        output$price_balance)
+  # the fit uses the real counts, so extra nodes do not change it
+  session$setInputs(useFittedParticipation = 1)
+  check("price tab - the button sets the fitted participation, ignoring extra nodes",
+        length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
         paste("fitted", fitted))
+  check("price tab - the calibration counts exclude extra nodes", grepl(sprintf("against %.2f active staked", mean(n)), output$price_calibration))
   session$setInputs(horizonDays = 0)
   check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
 })

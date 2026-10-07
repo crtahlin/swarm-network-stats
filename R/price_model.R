@@ -79,3 +79,43 @@ gib_month_bzz <- function(price, block_seconds) price * 2^18 * (30 * 86400 / blo
 
 # as a percentage change per day, for display
 drift_percent <- function(drift) 100 * (exp(drift) - 1)
+
+# how many active staked nodes would have to join (or could leave) for the modelled price to stop
+# rising (or falling), at participation q, and what spreading today's nodes evenly would do.
+# Nodes join where they lower the expected change most and leave where they raise it least; the
+# neighbourhoods are handled in groups of equal size, which is exact because the expected change
+# depends only on a neighbourhood's node count.
+# Returns: change per round now and after an even spread (mean log change), nodes to add (NA if no
+# number of nodes is enough), nodes that could leave, and the moves an even spread takes
+balance_plan <- function(n, q, oracle) {
+  levels <- max(n) + ceiling(8 / max(q, 0.01)) + 2
+  f <- expected_round_log_change(0:levels, q, oracle)          # f[k + 1]: change for k nodes
+  gain <- c(f[-length(f)] - f[-1], -Inf)                       # adding one node at k nodes
+  loss <- c(Inf, f[-length(f)] - f[-1])                        # removing one node at k nodes
+  now <- sum(f[n + 1])
+
+  # a sum that should come out at exactly 0 can be left at about 1e-20 by rounding; that counts as 0
+  tolerance <- 1e-12
+  add <- 0; count <- tabulate(n + 1, nbins = levels + 1); total <- now
+  while (total > tolerance) {
+    g <- ifelse(count > 0, gain, -Inf); k <- which.max(g)
+    if (!is.finite(g[k]) || g[k] <= 1e-12) { add <- NA; break }
+    take <- min(count[k], ceiling(total / g[k] - 1e-9))
+    count[k] <- count[k] - take; count[k + 1] <- count[k + 1] + take
+    total <- total - take * g[k]; add <- add + take
+  }
+  leave <- 0; count <- tabulate(n + 1, nbins = levels + 1); total <- now
+  while (total < -tolerance) {
+    l <- ifelse(count > 0, loss, Inf); k <- which.min(l)
+    take <- if (is.finite(l[k])) min(count[k], floor(-total / l[k] + tolerance)) else 0
+    if (take == 0) break
+    count[k] <- count[k] - take; count[k - 1] <- count[k - 1] + take
+    total <- total + take * l[k]; leave <- leave + take
+  }
+  # an even spread: every neighbourhood gets the average, rounded down or up; the fullest
+  # neighbourhoods keep the extra ones, so the moves are the nodes above each target
+  low <- sum(n) %/% length(n)
+  target <- rep(low, length(n)); target[seq_len(sum(n) - low * length(n))] <- low + 1
+  moves <- sum(pmax(sort(n, decreasing = TRUE) - target, 0))
+  list(now = now / length(n), even = sum(f[target + 1]) / length(n), add = add, leave = leave, moves = moves)
+}
