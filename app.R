@@ -553,19 +553,20 @@ ui <-
               ),
               radioButtons("acceptingRule", "Count a full node as usable if it", choices = light_node_rules, selected = "websocket", width = "100%"),
               layout_column_wrap(
-                width = 1/3, fill = FALSE,
-                numericInput("edgeNodes", "Our extra nodes for browser clients", value = 0, min = 0, max = 10000, step = 1),
-                numericInput("edgeNodeLimit", "Places on each of our extra nodes", value = 1000, min = 1, max = 100000, step = 100),
-                checkboxInput("preferEdge", "The browser client is set to prefer our extra nodes", value = TRUE, width = "100%")
+                width = 1/2, fill = FALSE,
+                numericInput("edgeNodes", "Our extra nodes for browser clients", value = 0, min = 0, max = 100000, step = 1),
+                numericInput("edgeNodeLimit", "Places on each of our extra nodes", value = 1000, min = 1, max = 100000, step = 100)
               ),
               p(strong("Our extra nodes"), " are full nodes we would run only to serve browser clients, set to take more of them than ",
-                "a normal node (a higher light-node limit, for example 1,000 places instead of 100). They only take more clients than ",
-                "other nodes if the browser client is set to prefer them, for example by listing them first. Without that, clients ",
-                "spread over all nodes, every node gets the same share, and the higher limit is never reached."),
+                "a normal node (a higher light-node limit, for example 1,000 places instead of 100). Once a browser client is running, ",
+                "it spreads its connections over the whole network, so every node gets the same share and the higher limit is not ",
+                "reached: for that, each extra node adds only as many places as any other node. Their higher limit does help at ",
+                "start-up, if the page that runs the client lists them as its start-up nodes (see What it would take). Making clients ",
+                "keep their connections on our nodes would need a change to the browser client; weeb-3 has no such setting today."),
               tags$details(
                 tags$summary("How this is calculated"),
                 tags$ul(
-                  tags$li("Places = usable full nodes × places per node, plus our extra nodes × their places when clients prefer them. ",
+                  tags$li("Places = (usable full nodes + our extra nodes) × places per node. ",
                           "Most clients at once = places ÷ nodes each client connects to. Demand against capacity = expected clients × ",
                           "nodes each client connects to ÷ places."),
                   tags$li("bee enforces the limit on each node (light-node limit, 100 by default; --light-node-limit since bee 2.8.2). ",
@@ -1248,7 +1249,7 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(isTRUE(input$expectedClients >= 0), "Enter 0 or more browser clients."))
     accepting <- accepting_full_nodes(swarm_data()$nodes, input$acceptingRule)
     capacity <- light_capacity(accepting, input$lightNodeLimit, input$clientConnections, input$edgeNodes, input$edgeNodeLimit,
-                               input$expectedClients, isTRUE(input$preferEdge))
+                               input$expectedClients)
     c(list(accepting = accepting), capacity)
   })
   # green up to 80% of capacity, amber up to 100%, red above
@@ -1279,10 +1280,9 @@ server <- function(input, output, session) {
   output$light_places <- renderText(format_number(light_model()$places))
   output$light_places_note <- renderText({
     m <- light_model()
-    base <- sprintf("%s nodes × %s places", format_number(m$accepting), format_number(input$lightNodeLimit))
-    if (input$edgeNodes == 0) return(base)
-    if (isTRUE(input$preferEdge)) sprintf("%s + %s of our extra nodes × %s places", base, format_number(input$edgeNodes), format_number(input$edgeNodeLimit)) else
-      sprintf("%s nodes × %s places (our extra nodes get an even share)", format_number(m$accepting + input$edgeNodes), format_number(min(input$lightNodeLimit, input$edgeNodeLimit)))
+    if (input$edgeNodes == 0) return(sprintf("%s nodes × %s places", format_number(m$accepting), format_number(input$lightNodeLimit)))
+    sprintf("(%s + %s of our extra nodes) × %s places; clients spread evenly, so the extra nodes' higher limit is not reached",
+            format_number(m$accepting), format_number(input$edgeNodes), format_number(min(input$lightNodeLimit, input$edgeNodeLimit)))
   })
   output$light_max_clients <- renderText(format_number(light_model()$max_clients))
   output$light_max_note <- renderText({
@@ -1304,7 +1304,7 @@ server <- function(input, output, session) {
 
   light_takes <- reactive({
     m <- light_model()
-    what_it_takes(m$accepting, input$lightNodeLimit, input$clientConnections, input$edgeNodeLimit, input$expectedClients)
+    what_it_takes(m$accepting, input$lightNodeLimit, input$clientConnections, input$expectedClients)
   })
   output$light_takes_intro <- renderText({
     t <- light_takes()
@@ -1316,21 +1316,24 @@ server <- function(input, output, session) {
     t <- light_takes()
     m <- light_model()
     data.frame(
-      Change = c("Clients connect to fewer nodes", "Every usable node takes more clients", "More full nodes offering a secure WebSocket address",
-                 "Our extra nodes, preferred by the client, alongside the network", "Our extra nodes carrying all clients alone"),
+      Change = c("Clients connect to fewer nodes", "Every usable node takes more clients",
+                 "More full nodes offering a secure WebSocket address (ours or anyone's)"),
       Needed = c(sprintf("at most %s nodes each, instead of %s", format_number(t$connections), format_number(input$clientConnections)),
                  sprintf("%s places per node, instead of %s", format_number(t$limit), format_number(input$lightNodeLimit)),
-                 sprintf("%s more, at %s places each", format_number(t$more_nodes), format_number(input$lightNodeLimit)),
-                 sprintf("%s extra nodes with %s places each", format_number(t$edge_with_network), format_number(input$edgeNodeLimit)),
-                 sprintf("%s extra nodes with %s places each", format_number(t$edge_alone), format_number(input$edgeNodeLimit))),
-      Who = c("the browser client's authors", "every node operator (we can only change our own nodes)", "node operators",
-              "us, plus a client setting", "us, plus a client setting"),
+                 sprintf("%s more, at %s places each", format_number(t$more_nodes), format_number(input$lightNodeLimit))),
+      Who = c("the browser client's authors", "every node operator (we can only change our own nodes)", "node operators, including us"),
       check.names = FALSE)
   }, striped = TRUE, spacing = "s", width = "100%")
   output$light_cold_start <- renderText({
-    sprintf("Starting up: when a tab opens, weeb-3 dials %s of its %s built-in nodes, picked at random. If all %s clients start at about the same time, each built-in node gets about %s connection attempts, against %s places. Whether those connections are kept after start-up has not been measured.",
-            weeb3_initial_dials, weeb3_bootnodes, format_number(input$expectedClients),
-            format_number(round(cold_start_per_node(input$expectedClients))), format_number(input$lightNodeLimit))
+    clients <- input$expectedClients
+    sprintf(paste("Starting up: when a tab opens, weeb-3 dials up to %s start-up nodes: by default %s of its %s built-in nodes, picked at random.",
+                  "If all %s clients start at about the same time, each built-in node gets about %s connection attempts, against %s places;",
+                  "whether those connections are kept after start-up has not been measured.",
+                  "The page that runs the client can pass its own start-up nodes instead (weeb-3's bootstrapNodes start option), which replace the built-in ones:",
+                  "to take the same burst, about %s of our extra nodes with %s places each would be needed."),
+            weeb3_initial_dials, weeb3_initial_dials, weeb3_bootnodes, format_number(clients),
+            format_number(round(cold_start_per_node(clients))), format_number(input$lightNodeLimit),
+            format_number(start_nodes_needed(clients, input$edgeNodeLimit)), format_number(input$edgeNodeLimit))
   })
 
   output$lightPlot <- renderPlot({
@@ -1339,7 +1342,7 @@ server <- function(input, output, session) {
     nodes <- m$accepting + input$edgeNodes
     curve <- data.frame(connections = seq(1, max(300, input$clientConnections * 1.2), length.out = 300))
     curve$clients <- vapply(curve$connections, function(k)
-      light_capacity(m$accepting, input$lightNodeLimit, k, input$edgeNodes, input$edgeNodeLimit, 0, isTRUE(input$preferEdge))$max_clients, numeric(1))
+      light_capacity(m$accepting, input$lightNodeLimit, k, input$edgeNodes, input$edgeNodeLimit, 0)$max_clients, numeric(1))
     now <- data.frame(connections = input$clientConnections, clients = m$max_clients)
     ggplot(curve, aes(x = connections, y = clients)) +
       geom_hline(yintercept = input$expectedClients, colour = swarm_colours$orange, linetype = "dashed", linewidth = 0.9) +
