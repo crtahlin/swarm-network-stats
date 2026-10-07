@@ -233,6 +233,8 @@ data_status_text <- function() {
 # stake, reveals and price from the Gnosis chain, with their own cache (chain_cache)
 # local = TRUE: runApp evaluates app.R in its own environment, which chain.R must see
 source("R/chain.R", local = TRUE)
+# the Nbhood map
+source("R/nbhood_map.R", local = TRUE)
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -250,10 +252,30 @@ stakes_table_columns <- c(
   "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
   "In swarmscan" = "Whether swarmscan lists the node at all"
 )
-stakes_table_header <- function() {
+# a DT table header from a named vector of column name = explanation; the explanation shows
+# when the pointer rests on the column name (the title attribute)
+header_with_tooltips <- function(columns) {
   tags$table(class = "display", tags$thead(tags$tr(
-    lapply(names(stakes_table_columns), function(name) tags$th(title = stakes_table_columns[[name]], name)))))
+    lapply(names(columns), function(name) tags$th(title = columns[[name]], name)))))
 }
+stakes_table_header <- function() header_with_tooltips(stakes_table_columns)
+
+# columns of the node table under the Nbhood map
+nbhood_nodes_columns <- c(
+  "Overlay" = "The node's overlay address",
+  "Kind" = paste0("Staked, active: staked and revealed in the set number of days. Staked, idle: staked, no reveal in that time. ",
+                  "Full, not staked: a full node in the swarmscan dump without stake"),
+  "Stake (BZZ)" = "The amount deposited; empty for a node without stake",
+  "Effective stake (BZZ)" = "What the redistribution game counts: the committed stake at today's price, capped at the deposit, and 0 while frozen",
+  "Height" = "Reserve doubling: the node stores 2^height neighbourhoods and is listed in each of them",
+  "Last reveal (UTC)" = paste0("Time of the node's latest reveal in the set number of days; empty if it has not played in that time"),
+  "Last round" = "Round of that reveal",
+  "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
+  "In swarmscan" = "Whether swarmscan lists the node",
+  "Reachable" = "Whether the node reports itself reachable, from swarmscan's status snapshot",
+  "Country" = "From swarmscan's location data",
+  "User agent" = "The bee version the node reports to swarmscan"
+)
 
 
 ### LOOK AND FEEL
@@ -333,6 +355,8 @@ ui <-
                                    value = 2, min = 1, max = 8),
                       checkboxInput("onlyFullNodes", "Show only full nodes",
                                     value = TRUE),
+                      numericInput("activeDays", "Active within (days)",
+                                   value = chain_window_days, min = 1, max = chain_window_days, step = 1),
                       textOutput("data_status"),
                       textOutput("chain_status")),
     # panels part
@@ -368,6 +392,25 @@ ui <-
               plotOutput("distPlot", height = "800px"),
               br(),
               textOutput("explainer_text_1")),
+
+    ###
+    nav_panel("Nbhood map",
+              div(class = "section-label", "Staked nodes per neighbourhood"),
+              p("One tile per neighbourhood at the storage radius set in the sidebar. Sister neighbourhoods, ",
+                "the two halves one split would create, sit next to each other. The colour counts staked nodes ",
+                "that revealed in the redistribution game within the days set in the sidebar. 4 (light green) is the number ",
+                "of matching reveals per round the price oracle aims for: fewer raise the price, more (dark green) lower it ",
+                "and spread the rewards thinner. A node with reserve doubling stores ",
+                "several neighbourhoods and counts in each. Point at a tile for its counts; click it to list its nodes."),
+              p("Light and ultra-light nodes are not shown: swarmscan does not list them, and their place in the ",
+                "network cannot be worked out from chain data."),
+              checkboxInput("showUnstaked", "Show non-staking nodes (full nodes without stake, from swarmscan)", value = FALSE, width = "100%"),
+              textOutput("nbhood_hover_text"),
+              plotOutput("nbhoodMap", height = "640px", hover = hoverOpts("nbhoodHover", delay = 100, delayType = "throttle"),
+                         click = "nbhoodClick"),
+              br(),
+              textOutput("nbhood_selected_text"),
+              DT::dataTableOutput("nbhood_nodes")),
 
     # ###
     # nav_panel("Nbhood counts",
@@ -595,6 +638,85 @@ server <- function(input, output, session) {
   rownames = FALSE 
   )
   
+  ###############
+  # NBHOOD MAP
+  ###############
+  # every node at the set radius, listed once per neighbourhood it counts in
+  nbhood_members_reactive <- reactive({
+    chain <- chain_data_polled()
+    shiny::validate(shiny::need(!is.null(chain),
+                                paste0("No data from the Gnosis chain yet (", chain_cache$last_error, "). Retrying every minute.")))
+    shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
+    shiny::validate(shiny::need(isTRUE(input$activeDays > 0 && input$activeDays <= chain_window_days),
+                                paste0("Enter an active period of at most ", chain_window_days, " days.")))
+    nbhood_members(chain_stakes(chain), last_reveals(chain, input$activeDays), swarm_data_polled()$nodes, input$storageRadius)
+  })
+  nbhood_tiles_reactive <- reactive(nbhood_tiles(nbhood_members_reactive(), input$storageRadius, isTRUE(input$showUnstaked)))
+
+  # the tile under a point of the plot; tiles sit on whole x and -y positions
+  tile_at <- function(point) {
+    if (is.null(point)) return(NULL)
+    tiles <- nbhood_tiles_reactive()
+    tile <- tiles[tiles$x == round(point$x) & tiles$y == round(-point$y), ]
+    if (nrow(tile) == 1) tile else NULL
+  }
+
+  output$nbhoodMap <- renderPlot({
+    tiles <- nbhood_tiles_reactive()
+    radius <- input$storageRadius
+    plot <- ggplot(tiles, aes(x = x, y = -y, fill = class)) +
+      geom_tile(colour = swarm_colours$bg, linewidth = if (radius <= 10) 0.6 else 0) +
+      scale_fill_manual(values = c("0" = swarm_colours$unreachable, "1" = swarm_colours$orange, "2" = swarm_colours$error,
+                                   "3" = "#7aa6c2", "4" = swarm_colours$mint, "5 or more" = "#0a8a68"),
+                        drop = FALSE,
+                        name = if (isTRUE(input$showUnstaked)) "Staked and active, plus full\nnodes without stake" else "Staked and active") +
+      coord_equal(expand = FALSE) +
+      swarm_plot_theme +
+      theme(axis.text = element_blank(), axis.ticks = element_blank(), axis.title = element_blank(),
+            panel.grid.major = element_blank(), legend.background = element_rect(fill = swarm_colours$bg),
+            legend.text = element_text(colour = swarm_colours$text, family = "mono"),
+            legend.title = element_text(colour = swarm_colours$muted, family = "mono"))
+    # the count in each tile while the tiles are big enough to read it (up to 1,024 tiles)
+    # dark text on the light tiles, light text on the dark green ones
+    if (radius <= 10) plot <- plot + geom_text(aes(label = shown, colour = ifelse(class == "5 or more", swarm_colours$text, swarm_colours$bg)),
+                                               family = "mono", size = if (radius <= 8) 4 else 3) + scale_colour_identity()
+    plot
+  # the map keeps square tiles, so it does not fill the whole image; the rest takes the page colour
+  }, bg = swarm_colours$bg)
+
+  output$nbhood_hover_text <- renderText({
+    tile <- tile_at(input$nbhoodHover)
+    if (is.null(tile)) "Point at a neighbourhood to see its counts." else nbhood_summary(tile, isTRUE(input$showUnstaked))
+  })
+
+  # the neighbourhood last clicked; cleared when the radius changes, because names change with it
+  selected_nbhood <- reactiveVal(NULL)
+  observeEvent(input$nbhoodClick, {
+    tile <- tile_at(input$nbhoodClick)
+    if (!is.null(tile)) selected_nbhood(tile$nbhood)
+  })
+  observeEvent(input$storageRadius, selected_nbhood(NULL))
+
+  output$nbhood_selected_text <- renderText({
+    if (is.null(selected_nbhood())) "Click a neighbourhood to list its nodes." else paste("Nodes in neighbourhood", selected_nbhood())
+  })
+
+  output$nbhood_nodes <- DT::renderDataTable({
+    shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
+    members <- nbhood_members_reactive()
+    shown <- members[members$nbhood == selected_nbhood(), ]
+    if (!isTRUE(input$showUnstaked)) shown <- shown[shown$kind != node_kinds[["unstaked"]], ]
+    shown <- shown[order(match(shown$kind, node_kinds), -shown$effective_stake), ]
+    data.frame(overlay = shown$overlay, kind = shown$kind,
+               stake = round(shown$stake, 2), effective_stake = round(shown$effective_stake, 2), height = shown$height,
+               last_reveal = format(shown$last_reveal, "%Y-%m-%d %H:%M", tz = "UTC"), last_round = shown$last_round,
+               matched_truth = shown$matched_truth, in_swarmscan = shown$in_swarmscan, reachable = shown$reachable,
+               country = shown$country, user_agent = shown$user_agent)
+  },
+  container = header_with_tooltips(nbhood_nodes_columns),
+  rownames = FALSE
+  )
+
   # table of staked overlays from the chain, with each one's latest reveal in the window
   output$stakes_table <- DT::renderDataTable({
     chain <- chain_data_polled()
