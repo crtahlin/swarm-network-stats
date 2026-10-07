@@ -74,7 +74,9 @@ expected_max_radius <- function(bits, minimum) {
   radius
 }
 
-all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text", "storage_taken", "max_radius", "max_capacity",
+all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
+                 "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
+                 "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
 
@@ -97,7 +99,8 @@ for (variant in variants) {
 
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
-      session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full)
+      session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
+                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
       label <- sprintf("%s, full=%s, radius %d", variant, full, radius)
       shown <- prepared
       if (full) shown <- shown[!is.na(shown$fullNode) & shown$fullNode, ]
@@ -408,6 +411,80 @@ testServer(server, {
   session$setInputs(activeDays = 0)
   check("map - an active period of 0 shows a message", grepl("Enter an active period", output_or_error(output$nbhood_hover_text)))
 })
+
+### Price projection (R/price_model.R)
+oracle <- chain$oracle
+check("price - oracle parameters read from the contract",
+      identical(oracle$change_rate, c(1049417, 1049206, 1048996, 1048786, 1048576, 1048366, 1048156, 1047946, 1047736)) &&
+        oracle$price_base == 2^20 && oracle$minimum_price == 24000 && identical(oracle$paused, FALSE))
+check("price - rounds per day", isTRUE(all.equal(rounds_per_day(5), 86400 / 760)) && isTRUE(all.equal(rounds_per_day(2), 86400 / 304)))
+# per round: a full redundancy r multiplies the price by changeRate[r] / priceBase; nobody revealing is the largest rise
+check("price - one round with every node revealing",
+      isTRUE(all.equal(expected_round_log_change(c(0, 3, 4, 8, 12), 1, oracle),
+                       log(c(1049417, 1048786, 1048576, 1047736, 1047736) / 2^20))))
+check("price - one round with nobody revealing", isTRUE(all.equal(expected_round_log_change(5, 0, oracle), log(1049417 / 2^20))))
+# hand calculation: 2 nodes at q = 0.5 give redundancy 0, 1 or 2 with probabilities 1/4, 1/2, 1/4
+check("price - binomial redundancy", isTRUE(all.equal(expected_round_log_change(2, 0.5, oracle),
+                                                    sum(c(0.25, 0.5, 0.25) * log(c(1049417, 1049206, 1048996) / 2^20)))))
+# the daily figures in issue #43: 4 everywhere is no change, 3 about +2.3%, 0 about +9.5%, 8 about -8.7%
+daily <- function(n) drift_percent(model_drift(rep(n, 512), 1, oracle, 5))
+check("price - 4 nodes everywhere: no change", abs(daily(4)) < 1e-12)
+check("price - 3 nodes everywhere: about +2.3% a day", abs(daily(3) - 2.3) < 0.05, sprintf("%.3f", daily(3)))
+check("price - no nodes: about +9.5% a day", abs(daily(0) - 9.5) < 0.1, sprintf("%.3f", daily(0)))
+check("price - 8 nodes everywhere: about -8.7% a day", abs(daily(8) + 8.7) < 0.1, sprintf("%.3f", daily(8)))
+check("price - 2-second blocks give 2.5 times the daily change", isTRUE(all.equal(model_drift(rep(3, 8), 1, oracle, 2), 2.5 * model_drift(rep(3, 8), 1, oracle, 5))))
+# fitting the participation finds the q that produced a drift
+counts <- c(rep(2, 50), rep(3, 200), rep(4, 200), rep(6, 62))
+check("price - fitted participation recovers the q behind a drift",
+      abs(fit_participation(counts, model_drift(counts, 0.7, oracle, 5), oracle, 5) - 0.7) < 1e-4)
+check("price - no participation fits a drift outside the model's range", is.na(fit_participation(counts, 1, oracle, 5)))
+falling <- project_price(30000, as.POSIXct("2026-10-07", tz = "UTC"), log(0.9), 30, 24000)
+check("price - the projection never goes below the minimum price",
+      min(falling$price) == 24000 && falling$price[1] == 30000 && nrow(falling) == 31)
+check("price - 1 GiB for 30 days", isTRUE(all.equal(gib_month_bzz(100000, 5), 100000 * 262144 * 518400 / 1e16)))
+# observed change and round statistics against the raw fixture
+# over the 6 hours: from the price in force 6 hours ago (the last update before then) to now
+raw_price <- chain$prices[order(chain$prices$time), ]
+in_force <- tail(raw_price$price[raw_price$time <= chain$head_time - 0.25 * 86400], 1)
+check("price - observed change from the price in force at the start", length(in_force) == 1 &&
+        isTRUE(all.equal(observed_drift(chain$prices, chain$price, chain$head_time, 0.25), log(chain$price / in_force) / 0.25)))
+# over a longer period than the history: from the first update, over the time since then
+since_first <- as.numeric(difftime(chain$head_time, raw_price$time[1], units = "days"))
+check("price - observed change from the first update when the history is shorter",
+      isTRUE(all.equal(observed_drift(chain$prices, chain$price, chain$head_time, 2), log(chain$price / raw_price$price[1]) / since_first)))
+check("price - no history gives no observed change", is.na(observed_drift(chain$prices[0, ], chain$price, chain$head_time, 1)))
+stats <- round_stats(chain, 0.25)
+truth_rounds_window <- unique(truth_rounds)
+complete <- truth_rounds_window[truth_rounds_window <= chain$to_block %/% 152 - 1 & truth_rounds_window >= ceiling(chain$window_start / 152)]
+check("price - claimed rounds are the complete rounds with a truth", stats$claimed == length(complete))
+check("price - matching reveals per claimed round",
+      isTRUE(all.equal(stats$mean_matching, sum(chain$reveals$round %in% complete & chain$reveals$matched_truth %in% TRUE) / length(complete))))
+
+# the button's slider update is recorded instead of sent to a browser
+slider_updates <- list()
+updateSliderInput <- function(session, inputId, ...) slider_updates[[length(slider_updates) + 1]] <<- list(id = inputId, value = list(...)$value)
+testServer(server, {
+  session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
+                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+  n <- nbhood_tiles(nbhood_members(chain_cache$data$stakes, last_reveals(chain_cache$data, 0.25), swarm_cache$data$nodes, 4), 4, FALSE)$active
+  check("price tab - model change matches the model", output$price_model_change == sprintf("%+.2f%%", drift_percent(model_drift(n, 1, oracle, 5))))
+  full_change <- output$price_model_change
+  session$setInputs(participation = 50)
+  check("price tab - lower participation raises the change", as.numeric(sub("%", "", output$price_model_change)) > as.numeric(sub("%", "", full_change)))
+  session$setInputs(participation = 100, extraNodes = 3)
+  check("price tab - extra nodes lower the change", as.numeric(sub("%", "", output$price_model_change)) <= as.numeric(sub("%", "", full_change)))
+  check("price tab - the plot renders with the comparison line", !inherits(output_or_error(output$pricePlot), "output_error"))
+  session$setInputs(extraNodes = 0, useFittedParticipation = 1)
+  observed <- observed_drift(chain_cache$data$prices, chain_cache$data$price, chain_cache$data$head_time, 0.25)
+  fitted <- fit_participation(n, observed, oracle, 5)
+  check("price tab - the button sets the fitted participation",
+        if (is.na(fitted)) length(slider_updates) == 0 else
+          length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
+        paste("fitted", fitted))
+  session$setInputs(horizonDays = 0)
+  check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
+})
+rm(updateSliderInput)
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)

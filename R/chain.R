@@ -17,7 +17,11 @@ chain_topics <- list(
   price_update  = "0xae46785019700e30375a5d7b4f91e32f8060ef085111f896ebf889450aa2ab5a"  # PriceUpdate(uint256)
 )
 chain_selectors <- list(current_price = "0x9d1b464a",  # currentPrice()
-                        stakes = "0x16934fc4")         # stakes(address)
+                        stakes = "0x16934fc4",         # stakes(address)
+                        change_rate = "0x74e7493b",    # changeRate(uint256)
+                        price_base = "0x7310561b",     # priceBase()
+                        minimum_price = "0x7f386b6c",  # minimumPrice()
+                        is_paused = "0xb187bd26")      # isPaused()
 
 round_length_blocks <- 152           # Redistribution.ROUND_LENGTH
 bzz_base_units <- 1e16               # BZZ has 16 decimals
@@ -188,6 +192,16 @@ read_stakes <- function(owners, price, head_block) {
   stakes
 }
 
+# the PriceOracle's parameters, read from the deployed contract: changeRate[0..8] (the price is
+# multiplied by changeRate[redundancy] / priceBase once per claimed round), the minimum price
+# and whether price changes are paused
+read_oracle <- function() {
+  calls <- c(paste0(chain_selectors$change_rate, sprintf("%064x", 0:8)),
+             chain_selectors$price_base, chain_selectors$minimum_price, chain_selectors$is_paused)
+  answers <- hex_to_number(rpc_eth_calls(chain_contracts$price_oracle$address, calls))
+  list(change_rate = answers[1:9], price_base = answers[10], minimum_price = answers[11], paused = answers[12] != 0)
+}
+
 ### one complete read, or an update of the previous one
 # previous: the last chain data, or NULL. Only blocks after previous$to_block are read again;
 # stakes are re-read in full every time, because freezes, withdrawals and height changes do not
@@ -235,7 +249,7 @@ fetch_chain_data <- function(previous = NULL) {
                                                         data = chain_selectors$current_price), "latest")))
   list(to_block = head_block, head_time = head_time, window_start = window_start,
        price = price, prices = prices, reveals = reveals, truths = truths, owners = owners,
-       stakes = read_stakes(owners, price, head_block))
+       stakes = read_stakes(owners, price, head_block), oracle = read_oracle())
 }
 
 ### accessors for the views
@@ -243,8 +257,9 @@ fetch_chain_data <- function(previous = NULL) {
 chain_reveals <- function(chain) chain$reveals
 # one row per staked overlay: stake, effective stake, height, frozen, whether it may play
 chain_stakes <- function(chain) chain$stakes
-# the current price and the price updates in the window, in PLUR per chunk per block
-chain_price <- function(chain) list(current = chain$price, history = chain$prices)
+# the current price and the price updates in the window, in PLUR per chunk per block, and the
+# oracle's parameters
+chain_price <- function(chain) list(current = chain$price, history = chain$prices, oracle = chain$oracle)
 
 # the latest reveal of each overlay within the last `days` days
 last_reveals <- function(chain, days) {
