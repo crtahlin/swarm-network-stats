@@ -1307,7 +1307,7 @@ server <- function(input, output, session) {
     bound <- if (!m$list_used) "" else if (m$bound_by == "list") ", bootnodes saturate first" else ", non-bootnode peers saturate first"
     text <- switch(light_state(m$load),
       over = if (m$most == 0) "Over capacity: there are no WSS full nodes to connect to." else
-        sprintf("Over capacity: %s concurrent clients, but the light-node limits allow at most %s (%s× over)%s. Over the limit, bee disconnects a random light peer for each new one.",
+        sprintf("Over capacity: %s concurrent clients, but the light-node limits allow at most %s (%s× over)%s. When a new light peer takes a node over its limit, bee disconnects a random light peer.",
                 format_number(clients), format_number(m$most), format_number(round(m$load, 1)), bound),
       close = sprintf("Near capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound),
       fits = sprintf("Within capacity: %s concurrent clients use %.0f%% of the maximum of %s%s.", format_number(clients), 100 * m$load, format_number(m$most), bound))
@@ -1336,8 +1336,10 @@ server <- function(input, output, session) {
     if (!light_inputs_set()) return("")
     m <- light_model()
     if (!m$list_used) return("")
-    sprintf("Each client keeps %s peers on the %s bootnodes, which allow at most %s clients, and %s peers on the other %s WSS full nodes, which allow at most %s.",
-            format_number(m$on_list), format_number(m$list_nodes), format_number(m$list_clients),
+    on_list <- sprintf("Each client keeps %s peers on the %s bootnodes, which allow at most %s clients", format_number(m$on_list),
+                       format_number(m$list_nodes), format_number(m$list_clients))
+    if (m$elsewhere == 0) return(paste0(on_list, ", and no peers on other nodes."))
+    sprintf("%s, and %s peers on the other %s WSS full nodes, which allow at most %s.", on_list,
             format_number(m$elsewhere), format_number(m$other_nodes), format_number(m$other_clients))
   })
 
@@ -1354,6 +1356,7 @@ server <- function(input, output, session) {
     needed <- vapply(seq_len(nrow(t)), function(i) {
       key <- t$change[i]
       if (t$status[i] == "already enough") return(sprintf("none needed (they allow %s clients)", format_number(t$value[i])))
+      if (key == "nodes" && t$status[i] == "not possible") return("no WSS full nodes")
       if (key == "bootnodes" && t$status[i] == "not possible")
         return(sprintf("%s (only %s WSS full nodes)", format_number(t$value[i]), format_number(m$capable)))
       if (is.na(t$value[i]) || t$status[i] == "not possible") return("–")

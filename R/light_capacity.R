@@ -46,6 +46,7 @@ what_it_takes <- function(capable, limit, peers, clients, bootnodes = 0, bootnod
   # peers per client on the non-bootnodes, before the cap at the number of nodes
   wanted_elsewhere <- peers - now$on_list
   rows <- list()
+  if (capable == 0) return(row("nodes", NA, "not possible"))
   if (now$on_list == 0) {
     p_new <- floor(capable * limit / clients)
     rows[[1]] <- if (p_new >= 1) row("peers", p_new, status(holds(p = p_new))) else row("peers", NA, "not possible")
@@ -55,8 +56,8 @@ what_it_takes <- function(capable, limit, peers, clients, bootnodes = 0, bootnod
     n_new <- max(capable + 1, ceiling(clients * peers / limit))
     rows[[3]] <- row("nodes", n_new, status(holds(cap = n_new)))
   } else {
-    # the other WSS full nodes; skipped when no peers go there
-    if (wanted_elsewhere > 0) {
+    # the other WSS full nodes; skipped when no peers go there, or when every WSS full node is a bootnode
+    if (wanted_elsewhere > 0 && other > 0) {
       if (now$other_clients >= clients) {
         rows[[1]] <- row("other", now$other_clients, "already enough")
       } else {

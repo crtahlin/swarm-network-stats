@@ -745,6 +745,9 @@ all_on_list <- what_it_takes(2493, 100, 150, 4000, bootnodes = 300, bootnode_lim
 check("light - with every peer on the bootnodes there is no row for the other nodes", !("other" %in% all_on_list$change) &&
         all(is.finite(all_on_list$value)))
 check("light - dial attempts use the bootnode peers each client keeps", start_attempts_per_node(4000, 300, 150) == 2000)
+check("light - with every WSS full node a bootnode there is no row for the other nodes",
+      !("other" %in% what_it_takes(300, 100, 200, 4000, bootnodes = 300, bootnode_limit = 100, bootnode_peers = 150)$change))
+check("light - no WSS full nodes is not possible", identical(what_it_takes(0, 100, 200, 10)$status, "not possible"))
 storage_history_data <- read_storage_history(tempfile())
 fetch_swarmscan_data <- function() with_wss
 swarm_cache$data <- NULL; swarm_cache$version <- 0; swarm_cache$next_attempt <- -Inf
@@ -770,7 +773,12 @@ testServer(server, {
         grepl("More bootnodes than WSS full nodes", output$light_input_warning) && grepl("0 bootnode peers per client", output$light_input_warning))
   session$setInputs(listNodes = 1, startDials = 3)
   check("light tab - a warning for more bootnode peers than peers", grepl("exceed peers per client", output$light_input_warning))
-  session$setInputs(startDials = 1)
+  session$setInputs(listNodes = 1, startDials = 2)
+  check("light tab - a warning for more bootnode peers than bootnodes", grepl("exceed the bootnodes", output$light_input_warning))
+  session$setInputs(clientConnections = 1, listNodes = 1, startDials = 1)
+  check("light tab - all peers on bootnodes: no Inf in the note", grepl("no peers on other nodes", output$light_list_note) &&
+          !grepl("Inf", output$light_list_note) && !grepl("Inf", output$light_takes))
+  session$setInputs(clientConnections = 2, startDials = 1)
   check("light tab - bootnodes add their rows and the dial-attempt line",
         grepl("dial attempts", output$light_start_burst) && grepl("bootnode", output$light_takes))
   session$setInputs(listNodes = 0, startDials = 0, otherLimit = 100, expectedClients = 10)
