@@ -403,9 +403,11 @@ check("map - empty nbhoods are told apart from hidden or idle ones",
       identical(as.character(fake_tiles$class[match(c("00", "01", "10", "11"), fake_tiles$nbhood)]), c("No node", "0", "0", "No node")))
 # a stake with height greater than the radius cannot play there and is left out; a full node without an overlay is left out
 deep <- chain$stakes[1, ]; deep$overlay <- paste(rep("ab", 32), collapse = ""); deep$height <- 6
-odd_dump <- dump
-odd <- which(dump$fullNode %in% TRUE & !(dump$overlay %in% chain$stakes$overlay))[1]
-odd_dump$overlay[odd] <- NA; odd_dump$overlay_binary[odd] <- NA
+# the node without an overlay goes through prepare_nodes_data, as in the app
+odd_fixture <- fixture
+odd <- which(prepare_nodes_data(fixture)$fullNode %in% TRUE & !(prepare_nodes_data(fixture)$overlay %in% chain$stakes$overlay))[1]
+odd_fixture$nodes$overlay[odd] <- NA
+odd_dump <- prepare_nodes_data(odd_fixture)
 with_deep <- nbhood_members(rbind(chain$stakes, deep), latest, odd_dump, 4)
 check("map - a stake deeper than the radius and a node without an overlay are left out", !(deep$overlay %in% with_deep$overlay) &&
         !anyNA(with_deep$nbhood) && nrow(with_deep) == nrow(nbhood_members(chain$stakes, latest, dump, 4)) - 1)

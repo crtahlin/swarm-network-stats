@@ -60,7 +60,7 @@ nbhood_members <- function(stakes, latest, dump_nodes, radius) {
   members$nbhood <- unlist(covered)
 
   if (!is.null(dump_nodes)) {
-    full <- which(dump_nodes$fullNode %in% TRUE & !(dump_nodes$overlay %in% all_staked) & !is.na(dump_nodes$overlay_binary))
+    full <- which(dump_nodes$fullNode %in% TRUE & !(dump_nodes$overlay %in% all_staked) & !is.na(dump_nodes$overlay))
     unstaked <- data.frame(
       overlay = dump_nodes$overlay[full], kind = unname(node_kinds["unstaked"]),
       stake = NA_real_, effective_stake = NA_real_, height = NA_real_,

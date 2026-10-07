@@ -439,7 +439,7 @@ ui <-
                 "of matching reveals per round the price oracle aims for: fewer raise the price, more (dark green) lower it ",
                 "and spread the rewards thinner. A node with reserve doubling stores ",
                 "several neighbourhoods and counts in each, placed with the sidebar radius; this matches the contract when ",
-                "the radius is the storage depth nodes report. A staked node whose reserve doubling is greater than the radius ",
+                "the radius is the storage radius nodes report. A staked node whose height is greater than the radius ",
                 "cannot play at that radius and is left out. Point at a tile for its counts; click it to list its nodes."),
               p("Light and ultra-light nodes are not shown: swarmscan does not list them, and their place in the ",
                 "network cannot be worked out from chain data."),
