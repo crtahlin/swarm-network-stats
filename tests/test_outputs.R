@@ -937,6 +937,14 @@ testServer(server, {
 })
 
 ### the sidebar shows each setting only on the tabs it applies to (#69)
+# tabs that hide the radius keep working with an invalid one typed on another tab
+testServer(server, {
+  session$setInputs(storageRadius = 20, minNodesPerNbhood = 2, onlyFullNodes = TRUE, activeDays = chain_window_days)
+  check("sidebar - Map, Data and Reachability ignore an invalid hidden radius",
+        !inherits(output_or_error(output$map_note), "output_error") && is.numeric(max_capacity_radius()) &&
+          nrow(filtered_nodes_reactive()) > 0)
+  check("sidebar - tabs that show the radius still ask for a valid one", grepl("Enter a storage radius", output_or_error(output$distPlot)))
+})
 ui_html <- htmltools::HTML(as.character(ui))
 tab_names <- sub('data-value="([^"]+)"', "\\1", unique(regmatches(ui_html, gregexpr('data-value="[^"]+"', ui_html))[[1]]))
 check("sidebar - every setting names real tabs", all(unlist(setting_tabs) %in% tab_names),
