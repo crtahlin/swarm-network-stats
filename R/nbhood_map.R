@@ -24,8 +24,12 @@ zorder_xy <- function(nbhoods) {
 # swarmscan nodes table (overlay_binary added), or NULL. A staked node with height d stores the
 # reserve of 2^d neighbourhoods (the contract lets it play where its overlay is within proximity
 # radius - d of the anchor), so it is listed once in each of them. Full nodes without stake are
-# listed in their own neighbourhood
+# listed in their own neighbourhood. A staked node whose height is greater than the radius is left
+# out: the contract computes depth - height as unsigned 8-bit arithmetic, so its reveal reverts and
+# it cannot play at that depth. Full nodes without an overlay are left out too
 nbhood_members <- function(stakes, latest, dump_nodes, radius) {
+  all_staked <- stakes$overlay
+  stakes <- stakes[stakes$height <= radius, ]
   reveal <- latest[match(stakes$overlay, latest$overlay), ]
   dump_overlays <- if (is.null(dump_nodes)) character(0) else dump_nodes$overlay
   in_dump <- match(stakes$overlay, dump_overlays)
@@ -48,7 +52,7 @@ nbhood_members <- function(stakes, latest, dump_nodes, radius) {
   # combination of the remaining height bits
   bits <- overlay_to_bits(staked$overlay)
   covered <- lapply(seq_len(nrow(staked)), function(i) {
-    shared <- max(radius - staked$height[i], 0)
+    shared <- radius - staked$height[i]
     rest <- radius - shared
     paste0(substr(bits[i], 1, shared), if (rest > 0) nbhood_names(rest) else "")
   })
@@ -56,7 +60,7 @@ nbhood_members <- function(stakes, latest, dump_nodes, radius) {
   members$nbhood <- unlist(covered)
 
   if (!is.null(dump_nodes)) {
-    full <- which(dump_nodes$fullNode %in% TRUE & !(dump_nodes$overlay %in% stakes$overlay))
+    full <- which(dump_nodes$fullNode %in% TRUE & !(dump_nodes$overlay %in% all_staked) & !is.na(dump_nodes$overlay))
     unstaked <- data.frame(
       overlay = dump_nodes$overlay[full], kind = unname(node_kinds["unstaked"]),
       stake = NA_real_, effective_stake = NA_real_, height = NA_real_,
@@ -85,8 +89,10 @@ nbhood_tiles <- function(members, radius, show_unstaked) {
   tiles$not_in_dump <- tabulate(match(members$nbhood[!members$in_swarmscan], nbhoods), nbins = length(nbhoods))
   tiles$shown <- tiles$active + if (show_unstaked) tiles$unstaked else 0
   # colour classes; 4 is the price oracle's target number of matching reveals per round. Fewer
-  # raise the price, more lower it, so both sides of 4 are off target
-  tiles$class <- factor(pmin(tiles$shown, 5), levels = 0:5, labels = c("0", "1", "2", "3", "4", "5 or more"))
+  # raise the price, more lower it, so both sides of 4 are off target. A neighbourhood with no
+  # node of any kind has its own class, apart from one whose nodes are all hidden or idle
+  tiles$class <- factor(ifelse(tiles$active + tiles$idle + tiles$unstaked == 0, "No node", as.character(pmin(tiles$shown, 5))),
+                        levels = c("No node", 0:5), labels = c("No node", "0", "1", "2", "3", "4", "5 or more"))
   tiles
 }
 
@@ -138,6 +144,6 @@ expected_earnings <- function(pot_per_day, radius, stake, others) {
 # the summed stake density weight (effective stake / 2^height) of the active staked nodes in a
 # neighbourhood, from nbhood_members()
 nbhood_stake_weight <- function(members, nbhood) {
-  active <- members[members$nbhood == nbhood & members$kind == node_kinds[["active"]], ]
+  active <- members[members$nbhood %in% nbhood & members$kind == node_kinds[["active"]], ]
   sum(active$effective_stake / 2^active$height)
 }

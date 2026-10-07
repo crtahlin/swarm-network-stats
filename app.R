@@ -258,6 +258,8 @@ storage_history_data <- read_storage_history()
 source("R/time_plots.R", local = TRUE)
 # the Connectivity tab: light-client capacity
 source("R/light_capacity.R", local = TRUE)
+# the Connectivity tab: bootnode load while clients join
+source("R/bootnodes.R", local = TRUE)
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -287,7 +289,8 @@ stakes_table_header <- function() header_with_tooltips(stakes_table_columns)
 nbhood_nodes_columns <- c(
   "Overlay" = "The node's overlay address",
   "Kind" = paste0("Staked, active: staked and revealed in the set number of days. Staked, idle: staked, no reveal in that time. ",
-                  "Full, not staked: a full node in the swarmscan dump without stake"),
+                  "Full, not staked: a full node in the swarmscan dump without stake. Idle also covers stakes that cannot play: ",
+                  "frozen, below the minimum stake, or too new"),
   "Stake (BZZ)" = "The amount deposited; empty for a node without stake",
   "Effective stake (BZZ)" = "What the redistribution game counts: the committed stake at today's price, capped at the deposit, and 0 while frozen",
   "Height" = "Reserve doubling: the node stores 2^height neighbourhoods and is listed in each of them",
@@ -437,13 +440,15 @@ ui <-
                 "that revealed in the redistribution game within the days set in the sidebar. 4 (light green) is the number ",
                 "of matching reveals per round the price oracle aims for: fewer raise the price, more (dark green) lower it ",
                 "and spread the rewards thinner. A node with reserve doubling stores ",
-                "several neighbourhoods and counts in each. Point at a tile for its counts; click it to list its nodes."),
+                "several neighbourhoods and counts in each, placed with the sidebar radius; this matches the contract when ",
+                "the radius is the storage radius nodes report. A staked node whose height is greater than the radius ",
+                "cannot play at that radius and is left out. Point at a tile for its counts; click it to list its nodes."),
               p("Light and ultra-light nodes are not shown: swarmscan does not list them, and their place in the ",
                 "network cannot be worked out from chain data."),
               layout_column_wrap(
                 width = 1/2, fill = FALSE,
                 checkboxInput("showUnstaked", "Show non-staking nodes (full nodes without stake, from swarmscan)", value = FALSE, width = "100%"),
-                numericInput("earningsStake", "Stake for the earnings estimate (xBZZ)", value = 10, min = 0.1, step = 1, width = "100%")
+                numericInput("earningsStake", "Stake for the earnings estimate (xBZZ)", value = 10, min = min_stake_bzz, step = 1, width = "100%")
               ),
               textOutput("nbhood_hover_text"),
               plotOutput("nbhoodMap", height = "640px", hover = hoverOpts("nbhoodHover", delay = 100, delayType = "throttle"),
@@ -575,6 +580,34 @@ ui <-
               textOutput("light_start_burst", container = p),
               div(class = "section-label", "Max concurrent clients by peers per client"),
               plotOutput("lightPlot", height = "400px"),
+              div(class = "section-label", "Bootnode load while clients join"),
+              p("A joining client dials bootnodes to find its first peers. A bootnode counts a client that is not a full node ",
+                "against its light-node-limit for as long as the connection is open, as any full node does (bee's bootnode mode ",
+                "changes only how it treats full peers). How many bootnodes a client dials and how long it keeps them ",
+                "depends on the client; set them below."),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                radioButtons("bootnodeSource", "Bootnodes", width = "100%",
+                             choices = c("bee's default, /dnsaddr/mainnet.ethswarm.org, resolved now" = "default", "Pasted multiaddresses" = "pasted")),
+                checkboxInput("bootnodeWssOnly", "Only bootnodes with a WSS address (browser clients)", value = FALSE, width = "100%")
+              ),
+              conditionalPanel("input.bootnodeSource == 'pasted'",
+                textAreaInput("bootnodeList", "Multiaddresses, one per line", rows = 4, width = "100%")),
+              layout_column_wrap(
+                width = 1/4, fill = FALSE,
+                numericInput("joinsPerMinute", "Joining clients per minute", value = NA, min = 0, max = 1e6, step = 10),
+                numericInput("bootnodeHoldSecs", "Seconds a client keeps each bootnode connection", value = NA, min = 0, max = 86400, step = 1),
+                numericInput("bootnodesDialled", "Bootnodes each joining client dials", value = NA, min = 1, max = 10000, step = 1),
+                numericInput("bootnodeLimit", "light-node-limit on bootnodes", value = 100, min = 1, max = 100000, step = 100)
+              ),
+              textOutput("bootnode_list_note", container = p),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                value_box(title = "Concurrent connections per bootnode", value = uiOutput("bootnode_concurrent"), textOutput("bootnode_concurrent_note", container = p)),
+                value_box(title = "Max joining clients per minute", value = textOutput("bootnode_max_joins"), textOutput("bootnode_max_joins_note", container = p))
+              ),
+              tableOutput("bootnode_hosts"),
+              textOutput("bootnode_lose_host", container = p),
               tags$details(
                 tags$summary("Assumptions and sources"),
                 tags$ul(
@@ -584,6 +617,10 @@ ui <-
                   tags$li("Client peers are assumed to spread evenly over the WSS full nodes; bootnode peers evenly over the bootnodes, ",
                           "one per node. Bootnodes are counted among the WSS full nodes."),
                   tags$li("The maximum is an upper bound: it assumes no other light peers are already connected. What happens after nodes saturate is not modelled."),
+                  tags$li("Bootnode load uses Little's law: concurrent connections per bootnode = joining clients per second × seconds each ",
+                          "connection is kept × bootnodes each client dials ÷ bootnodes, with the dials spread evenly. bee's default bootnode ",
+                          "address is resolved like libp2p does for /dnsaddr: TXT records dnsaddr=<multiaddress> on _dnsaddr.<name>, here ",
+                          "fetched over DNS over HTTPS. A bootnode is a peer ID; one bootnode can have several addresses."),
                   tags$li("The sidebar settings do not apply to this tab.")
                 )
               )),
@@ -842,7 +879,7 @@ server <- function(input, output, session) {
     radius <- input$storageRadius
     plot <- ggplot(tiles, aes(x = x, y = -y, fill = class)) +
       geom_tile(colour = swarm_colours$bg, linewidth = if (radius <= 10) 0.6 else 0) +
-      scale_fill_manual(values = c("0" = swarm_colours$unreachable, "1" = swarm_colours$orange, "2" = swarm_colours$error,
+      scale_fill_manual(values = c("No node" = swarm_colours$line, "0" = swarm_colours$unreachable, "1" = swarm_colours$orange, "2" = swarm_colours$error,
                                    "3" = "#7aa6c2", "4" = swarm_colours$mint, "5 or more" = "#0a8a68"),
                         drop = FALSE,
                         name = if (isTRUE(input$showUnstaked)) "Staked and active, plus full\nnodes without stake" else "Staked and active") +
@@ -854,7 +891,7 @@ server <- function(input, output, session) {
             legend.title = element_text(colour = swarm_colours$muted, family = "mono"))
     # the count in each tile while the tiles are big enough to read it (up to 1,024 tiles)
     # dark text on the light tiles, light text on the dark green ones
-    if (radius <= 10) plot <- plot + geom_text(aes(label = shown, colour = ifelse(class == "5 or more", swarm_colours$text, swarm_colours$bg)),
+    if (radius <= 10) plot <- plot + geom_text(aes(label = shown, colour = ifelse(class %in% c("5 or more", "No node"), swarm_colours$text, swarm_colours$bg)),
                                                family = "mono", size = if (radius <= 8) 4 else 3) + scale_colour_identity()
     plot
   # the map keeps square tiles, so it does not fill the whole image; the rest takes the page colour
@@ -881,7 +918,8 @@ server <- function(input, output, session) {
   # the set amount could expect to earn there
   nbhood_details <- reactive({
     shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
-    shiny::validate(shiny::need(isTRUE(input$earningsStake > 0), "Enter a stake above 0 for the earnings estimate."))
+    shiny::validate(shiny::need(isTRUE(input$earningsStake >= min_stake_bzz),
+                                sprintf("Enter a stake of at least %s xBZZ, the Staking contract's minimum, for the earnings estimate.", format_number(min_stake_bzz))))
     chain <- chain_data_polled()
     paid <- pot_per_day(chain, input$activeDays)
     others <- nbhood_stake_weight(nbhood_members_reactive(), selected_nbhood())
@@ -923,7 +961,7 @@ server <- function(input, output, session) {
   output$nbhood_nodes <- DT::renderDataTable({
     shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
     members <- nbhood_members_reactive()
-    shown <- members[members$nbhood == selected_nbhood(), ]
+    shown <- members[members$nbhood %in% selected_nbhood(), ]
     if (!isTRUE(input$showUnstaked)) shown <- shown[shown$kind != node_kinds[["unstaked"]], ]
     shown <- shown[order(match(shown$kind, node_kinds), -shown$effective_stake), ]
     data.frame(overlay = shown$overlay, kind = shown$kind,
@@ -1277,6 +1315,78 @@ server <- function(input, output, session) {
     n <- light_network()
     sprintf("Browsers cannot dial plain TCP, and pages served over HTTPS can only open wss connections. In swarmscan's current data, of %s full nodes, %s advertise a plain TCP underlay, %s a WSS underlay (%s both), and %s another kind. Whether the WSS underlays actually accept browser connections is not tested.",
             format_number(n$full), format_number(n$plain_tcp), format_number(n$capable), format_number(n$both), format_number(n$other_address))
+  })
+
+  # bootnode load while clients join
+  bootnode_addresses <- reactive({
+    if (identical(input$bootnodeSource, "pasted")) return(parse_multiaddrs(input$bootnodeList))
+    # resolved only while the tab is open (hidden outputs are not computed); refreshed every 6 hours,
+    # or tried again sooner after a failed lookup
+    addresses <- refresh_bootnode_cache()
+    invalidateLater(1000 * if (is.null(bootnode_cache$last_error)) bootnode_refresh_secs else retry_with_data_secs)
+    addresses
+  })
+  bootnode_model <- reactive({
+    table <- bootnode_table(bootnode_addresses())
+    shiny::validate(shiny::need(nrow(table) > 0, if (identical(input$bootnodeSource, "pasted")) "Paste one or more multiaddresses." else
+      paste0("bee's default bootnodes could not be resolved", if (!is.null(bootnode_cache$last_error)) paste0(" (", bootnode_cache$last_error, ")") else "",
+             ". Trying again every few minutes.")))
+    if (isTRUE(input$bootnodeWssOnly)) table <- table[table$wss, ]
+    shiny::validate(shiny::need(nrow(table) > 0, "None of these bootnodes has a WSS address."))
+    set <- isTRUE(input$joinsPerMinute >= 0) && isTRUE(input$bootnodeHoldSecs >= 0) && isTRUE(input$bootnodesDialled >= 1) &&
+      isTRUE(input$bootnodeLimit >= 1)
+    list(table = table, set = set,
+         hosts = if (set) bootnode_hosts(table, input$joinsPerMinute, input$bootnodeHoldSecs, input$bootnodesDialled, input$bootnodeLimit) else NULL)
+  })
+  output$bootnode_list_note <- renderText({
+    m <- bootnode_model()
+    peers <- length(unique(m$table$peer)); hosts <- length(unique(m$table$host[!is.na(m$table$host)]))
+    source <- if (identical(input$bootnodeSource, "pasted")) "pasted" else
+      sprintf("resolved from %s at %s UTC", bee_default_bootnode, format(bootnode_cache$fetched_at, "%Y-%m-%d %H:%M", tz = "UTC"))
+    sprintf("%s bootnodes (peer IDs) on %s IP addresses or hosts, with %s addresses, %s.", format_number(peers), format_number(hosts),
+            format_number(nrow(m$table)), source)
+  })
+  output$bootnode_concurrent <- renderUI({
+    m <- bootnode_model()
+    if (!m$set) return("–")
+    load <- m$hosts$load
+    span(style = sprintf("color: %s;", if (load$load > 1) swarm_colours$unreachable else if (load$load > 0.8) swarm_colours$error else swarm_colours$mint),
+         format_number(round(load$concurrent)))
+  })
+  output$bootnode_concurrent_note <- renderText({
+    m <- bootnode_model()
+    if (!m$set) return("Set joining clients per minute, seconds each connection is kept and bootnodes dialled.")
+    load <- m$hosts$load
+    sprintf("%s joins/s × %s s × %s bootnodes dialled ÷ %s bootnodes; %s%% of the light-node-limit of %s",
+            format_number(round(input$joinsPerMinute / 60, 2)), format_number(input$bootnodeHoldSecs), format_number(load$per_client),
+            format_number(m$hosts$bootnodes), format_number(round(100 * load$load)), format_number(input$bootnodeLimit))
+  })
+  output$bootnode_max_joins <- renderText({
+    m <- bootnode_model()
+    if (!m$set || is.na(m$hosts$load$max_joins_per_min)) "–" else format_number(floor(m$hosts$load$max_joins_per_min))
+  })
+  output$bootnode_max_joins_note <- renderText({
+    m <- bootnode_model()
+    if (!m$set) return("")
+    "Joining clients per minute at which each bootnode reaches its light-node-limit"
+  })
+  output$bootnode_hosts <- renderTable({
+    m <- bootnode_model()
+    shiny::req(m$set)
+    h <- m$hosts$hosts
+    data.frame(`IP address or host` = h$host, Bootnodes = format_number(h$bootnodes),
+               `Concurrent connections` = format_number(round(h$concurrent)),
+               `Load` = sprintf("%s%%", format_number(round(100 * h$concurrent / (h$bootnodes * input$bootnodeLimit)))),
+               check.names = FALSE)
+  }, striped = TRUE, spacing = "s", width = "100%")
+  output$bootnode_lose_host <- renderText({
+    m <- bootnode_model()
+    if (!m$set || nrow(m$hosts$hosts) < 2) return("")
+    # each bootnode is counted on one host, so with two or more hosts some bootnodes are left
+    without <- m$hosts$without_busiest
+    sprintf("If %s (%s of the %s bootnodes) is lost, the other bootnodes each take about %s concurrent connections (%s%% of the light-node-limit), and the maximum is about %s joining clients per minute.",
+            m$hosts$busiest_host, format_number(m$hosts$hosts$bootnodes[1]), format_number(m$hosts$bootnodes),
+            format_number(round(without$concurrent)), format_number(round(100 * without$load)), format_number(floor(without$max_joins_per_min)))
   })
 
   # the bootnodes' light-node-limit follows the light-node-limit until the reader changes it
