@@ -593,11 +593,14 @@ old_dump$statusSnapshot <- data.frame(reserveSize = c(2^21, 2^22, 0), storageRad
 old_row <- summarise_dump(old_dump, "2024-01-20")
 check("storage - an old dump falls back to the whole reserve", old_row$measure == "whole reserve" && old_row$nodes_reporting == 2 &&
         isTRUE(all.equal(old_row$stored_tib, median(c(2^21, 2^22) * 4096 * 2^10) / 2^40)))
+# as bee reports them: a node with doubling d has storageRadius = committedDepth - d and a reserve over 2^d neighbourhoods
 doubled <- data.frame(overlay = c("a", "b", "c"))
-doubled$statusSnapshot <- data.frame(reserveSizeWithinRadius = c(0.9, 1.8, 7.2) * 2^22, storageRadius = 9, committedDepth = c(9, 10, 12))
+doubled$statusSnapshot <- data.frame(reserveSizeWithinRadius = c(0.9, 1.8, 7.2) * 2^22, storageRadius = c(9, 8, 6), committedDepth = 9)
 doubled_row <- summarise_dump(doubled, "2026-10-07")
-check("storage - a doubled node's reserve counts per neighbourhood", isTRUE(all.equal(doubled_row$fullness_p90, 0.9)) &&
-        isTRUE(all.equal(doubled_row$stored_tib, 0.9 * 2^22 * 4096 * 2^9 / 2^40)))
+check("storage - doubled nodes: fullness against their own capacity, stored data unchanged",
+      isTRUE(all.equal(doubled_row$fullness_p90, 0.9)) && isTRUE(all.equal(doubled_row$stored_tib, 0.9 * 2^22 * 4096 * 2^9 / 2^40)),
+      paste(doubled_row$fullness_p90, doubled_row$stored_tib))
+check("storage - a zero-byte history file reads as empty", { f <- tempfile(); file.create(f); nrow(read_storage_history(f)) == 0 })
 check("storage - capacity at radius 9 is 8 TiB", capacity_tib(9) == 8)
 check("storage - no history file gives an empty history", nrow(read_storage_history(tempfile())) == 0)
 # a synthetic history: 5 TiB growing by 0.01 TiB a day, plus older days of the old measure that the fit ignores
@@ -645,7 +648,8 @@ testServer(server, {
                     participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0)
   summary <- output$growth_summary
   check("growth tab - summary gives the capacity and the crossing dates", grepl("Capacity at radius 9: 8 TiB", summary, fixed = TRUE) &&
-          grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date", summary, fixed = TRUE), summary)
+          grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date (not reached)", summary, fixed = TRUE) &&
+          grepl("Projection from a fit to", summary, fixed = TRUE), summary)
   check("growth tab - plots render", !inherits(output_or_error(output$growthPlot), "output_error") &&
           !inherits(output_or_error(output$fullnessPlot), "output_error"))
   check("growth tab - hint until the pointer is over the plot", output$growthPlot_hover == time_plot_hint)
@@ -671,11 +675,18 @@ testServer(server, {
   summary_assumed <- output$growth_summary
   now_row <- tail(synthetic, 1)
   expected_date <- assumed_crossing(as.Date(current_time()), now_row$stored_tib, 5, 8)
-  check("growth tab - the assumed growth gives its own crossing dates", grepl("Assumed +5% a month from today", summary_assumed, fixed = TRUE),
+  check("growth tab - the assumed growth gives its own crossing dates", grepl("Assumed +5% a month from 20", summary_assumed, fixed = TRUE),
         summary_assumed)
   session$setInputs(growthPlot_pointer = list(x = as.numeric(as.Date("2026-12-01")), y = 7))
   check("growth tab - the pointer reads the assumed growth", grepl("assumed +5% a month", output$growthPlot_hover, fixed = TRUE))
   check("growth tab - the plot renders with the assumed growth", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(assumedGrowth = -100)
+  check("growth tab - an assumed growth of -100% keeps the rest of the summary", grepl("must be above -100%", output$growth_summary) &&
+          grepl("Straight line", output$growth_summary))
+  session$setInputs(storageRadius = 2)
+  check("growth tab - a level already passed says so", grepl("radius rises to 3: already above", output$growth_summary, fixed = TRUE))
+  session$setInputs(storageRadius = 9, growthPlot_pointer = list(x = as.numeric(as.Date("2020-01-01")), y = 1))
+  check("growth tab - the pointer far from any data shows only the date", output$growthPlot_hover == "2020-01-01")
   session$setInputs(assumedGrowth = 0)
   check("growth tab - 0% leaves the assumed growth out", !grepl("Assumed", output$growth_summary) && is.null(isolate(growth_series())$Assumed))
   session$setInputs(fitDays = 3)
