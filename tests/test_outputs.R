@@ -608,11 +608,17 @@ testServer(server, {
   session$setInputs(pricePlot_brush = list(xmin = head_time - 4 * 3600, xmax = head_time + 86400))
   check("price tab - the plot renders zoomed in", !inherits(output_or_error(output$pricePlot), "output_error"))
   rs <- round_stats(chain_cache$data, 0.25)
-  check("price tab - the truths' depth is shown against the radius", !is.na(rs$truth_depth) &&
-          grepl(sprintf("truths were at depth %d, but the sidebar radius is 4", rs$truth_depth), output$price_calibration, fixed = TRUE),
+  # by hand: the most common depth - height of the matching reveals in claimed rounds
+  m <- chain_cache$data$reveals[chain_cache$data$reveals$matched_truth %in% TRUE & chain_cache$data$reveals$round %in% chain_cache$data$truths$round, ]
+  m <- m[m$round >= ceiling((chain_cache$data$to_block - 0.25 * 86400 / 5) / 152), ]
+  h <- chain_cache$data$stakes$height[match(m$overlay, chain_cache$data$stakes$overlay)]
+  check("price tab - the drawn depth is the matching reveals' depth minus height",
+        rs$drawn_depth == as.numeric(names(which.max(table((m$depth - h)[!is.na(h)])))), rs$drawn_depth)
+  check("price tab - the drawn depth is shown against the radius", !is.na(rs$drawn_depth) &&
+          grepl(sprintf("drawn at depth %d (the matching reveals' depth minus height), but the sidebar radius is 4", rs$drawn_depth), output$price_calibration, fixed = TRUE),
         output$price_calibration)
-  session$setInputs(storageRadius = rs$truth_depth)
-  check("price tab - no warning when the radius is the truths' depth", grepl("the radius set in the sidebar", output$price_calibration) &&
+  session$setInputs(storageRadius = rs$drawn_depth)
+  check("price tab - no warning when the radius is the drawn depth", grepl("the radius set in the sidebar", output$price_calibration) &&
           !grepl("Warning", output$price_calibration))
   session$setInputs(storageRadius = 4)
   session$setInputs(horizonDays = 0)
@@ -625,7 +631,11 @@ testServer(server, {
                     participation = 50, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
   check("price tab - paused: the model change is 0", output$price_model_change == "+0.00%", output$price_model_change)
   check("price tab - paused: the price at the horizon is today's", output$price_at_horizon == output$price_now)
-  check("price tab - paused: the calibration says so", grepl("paused", output$price_calibration))
+  check("price tab - paused: the calibration says so, without a fitted participation", grepl("paused", output$price_calibration) &&
+          !grepl("reproduces the observed change", output$price_calibration))
+  check("price tab - paused: no nodes to hold the price flat", output$price_balance == "–" && grepl("paused", output$price_balance_note))
+  session$setInputs(extraNodes = 2)
+  check("price tab - paused: the line without extra nodes is flat too", all(price_series()$plain$y == price_series()$plain$y[1]))
 })
 chain_cache$data$oracle$paused <- FALSE
 rm(updateSliderInput)

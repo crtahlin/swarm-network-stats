@@ -466,7 +466,7 @@ ui <-
                 "and the number of matching reveals sets the change: fewer than 4 raise the price, more than 4 lower it, ",
                 "and a round nobody claims counts as the largest rise. The model takes the staked nodes that revealed ",
                 "within the days set in the sidebar, in every neighbourhood at the sidebar's radius, and assumes each of ",
-                "them reveals a matching hash with the probability set below as participation. It then extends today's price at the ",
+                "them reveals a matching hash with probability q (participation, below). It then extends today's price at the ",
                 "expected change per day. Participation is a calibrated parameter: the value that makes the model reproduce ",
                 "the observed price change, not a measured reveal rate. The chain's own figure, matching reveals per claimed round, ",
                 "is shown under the boxes. The 2-second option applies 2-second blocks from today, with no rescaling of the ",
@@ -476,7 +476,7 @@ ui <-
                 sliderInput("participation", "Participation, calibrated (%)", min = 0, max = 100, value = 100, step = 1),
                 numericInput("horizonDays", "Horizon (days)", value = 90, min = 1, max = 730, step = 1),
                 radioButtons("blockSeconds", "Gnosis block time",
-                             choices = c("5 seconds (now)" = 5, "2 seconds from today, price not rescaled (GIP-153)" = 2), selected = 5),
+                             choices = c("5 seconds (now)" = 5, "2 seconds from today (GIP-153), no repricing" = 2), selected = 5),
                 numericInput("extraNodes", "Extra staked nodes in each neighbourhood with fewer than 4",
                              value = 0, min = 0, max = 10, step = 1)
               ),
@@ -1038,17 +1038,20 @@ server <- function(input, output, session) {
   # the participation set
   price_balance_plan <- reactive(balance_plan(price_active_counts(), price_settings()$q, chain_data_polled()$oracle))
   output$price_balance <- renderText({
+    if (isTRUE(chain_data_polled()$oracle$paused)) return("–")
     plan <- price_balance_plan()
     if (is.na(plan$add)) "out of reach" else if (plan$add > 0) paste0("+", format_number(plan$add)) else
       if (plan$leave > 0) paste0("-", format_number(plan$leave)) else "0"
   })
   output$price_balance_note <- renderText({
+    if (isTRUE(chain_data_polled()$oracle$paused)) return("the price oracle is paused, so the price does not move")
     plan <- price_balance_plan()
     if (is.na(plan$add)) "no number of nodes stops the rise at this participation" else
       if (plan$add > 0) "active staked nodes to add, at the participation above" else
         if (plan$leave > 0) "active staked nodes that could leave before the price stops falling" else "the price is flat already"
   })
   output$price_balance_text <- renderText({
+    if (isTRUE(chain_data_polled()$oracle$paused)) return("")
     plan <- price_balance_plan()
     settings <- price_settings()
     n <- price_active_counts()
@@ -1072,7 +1075,7 @@ server <- function(input, output, session) {
     chain <- chain_data_polled()
     fitted <- fitted_participation()
     rounds <- round_stats(chain, input$activeDays)
-    fit_text <- if (is.na(fitted)) {
+    fit_text <- if (isTRUE(chain$oracle$paused)) "" else if (is.na(fitted)) {
       "No participation reproduces the observed change with these neighbourhood counts."
     } else {
       sprintf("A participation of %.0f%% reproduces the observed change.", 100 * fitted)
@@ -1081,10 +1084,10 @@ server <- function(input, output, session) {
       "On chain over the same %s days: %s rounds, %s of them claimed (%.1f%% not claimed), with %.2f matching reveals per claimed round on average, against %.2f active staked nodes per neighbourhood.",
       format_number(input$activeDays), format_number(rounds$rounds), format_number(rounds$claimed),
       100 * (1 - rounds$claimed / max(rounds$rounds, 1)), rounds$mean_matching, mean(price_active_counts())),
-      if (is.na(rounds$truth_depth)) "" else if (rounds$truth_depth == input$storageRadius)
-        sprintf("The claimed truths were at depth %d, the radius set in the sidebar.", rounds$truth_depth) else
-        sprintf("Warning: the claimed truths were at depth %d, but the sidebar radius is %d. The model counts nodes per neighbourhood at the sidebar radius, so set it to %d for these counts to match the game.",
-                rounds$truth_depth, input$storageRadius, rounds$truth_depth),
+      if (is.na(rounds$drawn_depth) || !isTRUE(input$storageRadius %in% 1:16)) "" else if (rounds$drawn_depth == input$storageRadius)
+        sprintf("Neighbourhoods were drawn at depth %d (the matching reveals' depth minus height), the radius set in the sidebar.", rounds$drawn_depth) else
+        sprintf("Warning: neighbourhoods were drawn at depth %d (the matching reveals' depth minus height), but the sidebar radius is %d. The model counts nodes per neighbourhood at the sidebar radius, so set it to %d for these counts to match the game.",
+                rounds$drawn_depth, input$storageRadius, rounds$drawn_depth),
       if (isTRUE(chain$oracle$paused)) "The price oracle is paused, so the price does not change at all, and the projection holds it flat." else "")
   })
 
@@ -1107,7 +1110,8 @@ server <- function(input, output, session) {
                    projection = data.frame(x = model$projection$time, y = model$projection$price))
     if (isTRUE(input$extraNodes > 0)) {
       plain <- project_price(model$chain$price, model$chain$head_time,
-                             model_drift(price_active_counts(), model$settings$q, model$chain$oracle, model$settings$block_seconds),
+                             if (isTRUE(model$chain$oracle$paused)) 0 else
+                               model_drift(price_active_counts(), model$settings$q, model$chain$oracle, model$settings$block_seconds),
                              model$settings$days, model$chain$oracle$minimum_price)
       series$plain <- data.frame(x = plain$time, y = plain$price)
     }
