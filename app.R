@@ -241,6 +241,8 @@ source("R/price_model.R", local = TRUE)
 # scripts/build_storage_history.R and read once when the app starts
 source("R/storage_history.R", local = TRUE)
 storage_history_data <- read_storage_history()
+# zoom and pointer read-outs for the plots against time
+source("R/time_plots.R", local = TRUE)
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -470,7 +472,12 @@ ui <-
               actionButton("useFittedParticipation", "Set participation to the value that reproduces the observed change",
                            class = "btn-sm btn-outline-primary"),
               br(), br(),
-              plotOutput("pricePlot", height = "520px")),
+              div(style = "display: flex; justify-content: space-between; gap: 1em;",
+                  textOutput("pricePlot_hover", container = p),
+                  actionLink("pricePlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
+              plotOutput("pricePlot", height = "520px",
+                         brush = brushOpts("pricePlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
+                         dblclick = "pricePlot_dblclick", hover = hoverOpts("pricePlot_pointer", delay = 80, delayType = "throttle"))),
 
     ###
     nav_panel("Storage growth",
@@ -478,21 +485,33 @@ ui <-
               p("Stored data is estimated from each node's reserve: the reserve within its radius times the number of ",
                 "neighbourhoods, taken as the median over the nodes that report it. The history has one value a day from ",
                 "swarmscan's archive of network dumps, plus today's. The fitted curves are projections of past growth, ",
-                "not forecasts. The storage radius rises when reserves are full, at the network's capacity for the radius set ",
-                "in the sidebar, and falls when they are less than half full."),
+                "not forecasts. A bee node raises its radius when the chunks within its radius exceed its reserve capacity ",
+                "(exactly 100%, 2^22 chunks), and lowers it when they fall below 50% and syncing has stopped (checked every 30 minutes). ",
+                "Reserves fill almost evenly across neighbourhoods, so the network's capacity at the radius set in the sidebar is ",
+                "where nodes split."),
               layout_column_wrap(
                 width = 1/2, fill = FALSE,
                 numericInput("fitDays", "Fit over the last (days)", value = 90, min = 7, max = 1500, step = 1),
                 numericInput("growthHorizon", "Project ahead (days)", value = 180, min = 1, max = 1095, step = 1)
               ),
               textOutput("growth_summary", container = p),
-              plotOutput("growthPlot", height = "560px"),
+              div(style = "display: flex; justify-content: space-between; gap: 1em;",
+                  textOutput("growthPlot_hover", container = p),
+                  actionLink("growthPlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
+              plotOutput("growthPlot", height = "560px",
+                         brush = brushOpts("growthPlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
+                         dblclick = "growthPlot_dblclick", hover = hoverOpts("growthPlot_pointer", delay = 80, delayType = "throttle")),
               br(),
               div(class = "section-label", "Reserve fullness"),
               p("How full the nodes' reserves are, as a share of one reserve (2^22 chunks) per neighbourhood: a node with ",
-                "reserve doubling counts per neighbourhood it stores. At 100% nodes move to the next radius; below 50% they ",
-                "fall back. Each change of radius halves or doubles the share."),
-              plotOutput("fullnessPlot", height = "420px")),
+                "reserve doubling counts per neighbourhood it stores. Above 100% a bee node moves to the next radius; below 50%, ",
+                "once syncing has stopped, it falls back. Each change of radius halves or doubles the share."),
+              div(style = "display: flex; justify-content: space-between; gap: 1em;",
+                  textOutput("fullnessPlot_hover", container = p),
+                  actionLink("fullnessPlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
+              plotOutput("fullnessPlot", height = "420px",
+                         brush = brushOpts("fullnessPlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
+                         dblclick = "fullnessPlot_dblclick", hover = hoverOpts("fullnessPlot_pointer", delay = 80, delayType = "throttle"))),
 
     # ###
     # nav_panel("Nbhood counts",
@@ -951,6 +970,47 @@ server <- function(input, output, session) {
       if (isTRUE(chain$oracle$paused)) "The price oracle is paused, so the price does not change at all." else "")
   })
 
+  # zoom state of each plot against time: NULL for the whole plot, or the dragged period
+  plot_zoom <- function(name) {
+    zoom <- reactiveVal(NULL)
+    observeEvent(input[[paste0(name, "_brush")]], { b <- input[[paste0(name, "_brush")]]; zoom(c(b$xmin, b$xmax)) })
+    observeEvent(input[[paste0(name, "_dblclick")]], zoom(NULL))
+    observeEvent(input[[paste0(name, "_zoomout")]], zoom(NULL))
+    zoom
+  }
+  price_zoom <- plot_zoom("pricePlot")
+  growth_zoom <- plot_zoom("growthPlot")
+  fullness_zoom <- plot_zoom("fullnessPlot")
+
+  # the price plot's series, as x and y
+  price_series <- reactive({
+    model <- price_model()
+    series <- list(history = data.frame(x = model$chain$prices$time, y = model$chain$prices$price),
+                   projection = data.frame(x = model$projection$time, y = model$projection$price))
+    if (isTRUE(input$extraNodes > 0)) {
+      plain <- project_price(model$chain$price, model$chain$head_time,
+                             model_drift(price_active_counts(), model$settings$q, model$chain$oracle, model$settings$block_seconds),
+                             model$settings$days, model$chain$oracle$minimum_price)
+      series$plain <- data.frame(x = plain$time, y = plain$price)
+    }
+    series
+  })
+  output$pricePlot_hover <- renderText({
+    at <- input$pricePlot_pointer$x
+    if (is.null(at)) return(time_plot_hint)
+    series <- price_series()
+    parts <- c(format(as.POSIXct(at, origin = "1970-01-01", tz = "UTC"), "%Y-%m-%d %H:%M UTC"))
+    on_chain <- value_at(series$history, at, step = TRUE, max_gap = 0)
+    if (!is.na(on_chain) && at <= as.numeric(price_model()$chain$head_time)) parts <- c(parts, paste("price", format_number(on_chain), "PLUR"))
+    projected <- value_at(series$projection, at, max_gap = 0)
+    if (!is.na(projected)) parts <- c(parts, paste("projection", format_number(round(projected)), "PLUR"))
+    if (!is.null(series$plain)) {
+      plain <- value_at(series$plain, at, max_gap = 0)
+      if (!is.na(plain)) parts <- c(parts, paste("without the extra nodes", format_number(round(plain)), "PLUR"))
+    }
+    paste(parts, collapse = " | ")
+  })
+
   output$pricePlot <- renderPlot({
     model <- price_model()
     history <- model$chain$prices
@@ -958,19 +1018,18 @@ server <- function(input, output, session) {
       geom_step(data = history, aes(x = time, y = price), colour = swarm_colours$text, linewidth = 1) +
       geom_line(data = model$projection, aes(x = time, y = price), colour = swarm_colours$orange, linetype = "dashed", linewidth = 1.2) +
       geom_vline(xintercept = model$chain$head_time, colour = swarm_colours$muted, linetype = "dotted")
-    if (isTRUE(input$extraNodes > 0)) {
+    plain <- price_series()$plain
+    if (!is.null(plain)) {
       # the same projection without the extra nodes, for comparison
-      plain <- project_price(model$chain$price, model$chain$head_time,
-                             model_drift(price_active_counts(), model$settings$q, model$chain$oracle, model$settings$block_seconds),
-                             model$settings$days, model$chain$oracle$minimum_price)
-      plot <- plot + geom_line(data = plain, aes(x = time, y = price), colour = swarm_colours$muted, linetype = "dashed", linewidth = 1)
+      plot <- plot + geom_line(data = plain, aes(x = x, y = y), colour = swarm_colours$muted, linetype = "dashed", linewidth = 1)
     }
     plot + scale_y_continuous(labels = function(x) format_number(x)) +
       swarm_plot_theme +
       labs(x = NULL, y = "PLUR per chunk per block",
            caption = paste("White: price updates on chain. Orange, dashed: projection.",
                            if (isTRUE(input$extraNodes > 0)) "Grey, dashed: projection without the extra nodes." else "")) +
-      swarm_readable_text
+      swarm_readable_text +
+      zoom_coord(zoom_limits(price_zoom(), price_series()), "datetime")
   }, bg = swarm_colours$bg)
 
   ###############
@@ -1017,6 +1076,36 @@ server <- function(input, output, session) {
           describe("exponential", sprintf("Exponential, %+.2f%% a day", growth)))
   })
 
+  # the growth plot's series, as x and y
+  growth_series <- reactive({
+    g <- growth_fit()
+    series <- list(stored = data.frame(x = g$history$date, y = g$history$stored_tib, radius = g$history$radius_mode,
+                                       measure = g$history$measure))
+    if (!is.null(g$fit)) {
+      projection <- project_growth(g$fit, input$growthHorizon)
+      for (kind in unique(projection$fit)) series[[kind]] <- data.frame(x = projection$date[projection$fit == kind],
+                                                                       y = projection$stored_tib[projection$fit == kind])
+    }
+    series
+  })
+  output$growthPlot_hover <- renderText({
+    at <- input$growthPlot_pointer$x
+    if (is.null(at)) return(time_plot_hint)
+    series <- growth_series()
+    parts <- format(as.Date(round(at), origin = "1970-01-01"), "%Y-%m-%d")
+    stored <- series$stored
+    near <- which.min(abs(as.numeric(stored$x) - at))
+    if (abs(as.numeric(stored$x[near]) - at) <= 1) {
+      parts <- c(parts, sprintf("stored %s TiB at radius %s%s", format_number(round(stored$y[near], 2)), stored$radius[near],
+                                if (stored$measure[near] == "whole reserve") " (older measure)" else ""))
+    }
+    for (kind in intersect(c("Straight line", "Exponential"), names(series))) {
+      value <- value_at(series[[kind]], at, max_gap = 0)
+      if (!is.na(value)) parts <- c(parts, sprintf("%s %s TiB", tolower(kind), format_number(round(value, 2))))
+    }
+    paste(parts, collapse = " | ")
+  })
+
   output$growthPlot <- renderPlot({
     g <- growth_fit()
     plot <- ggplot() +
@@ -1037,8 +1126,19 @@ server <- function(input, output, session) {
       labs(x = NULL, y = "Stored data (TiB)",
            caption = paste("Dashed: fits of the last days set above, extended to the horizon (projections). Dotted: radius changes.",
                            "Grey: days before nodes reported their reserve within radius; their whole reserve overstates the stored data.",
-                           sep = "\n"))
+                           sep = "\n")) +
+      zoom_coord(zoom_limits(growth_zoom(), growth_series()), "date")
   }, bg = swarm_colours$bg)
+
+  output$fullnessPlot_hover <- renderText({
+    at <- input$fullnessPlot_pointer$x
+    if (is.null(at)) return(time_plot_hint)
+    history <- growth_fit()$history
+    near <- which.min(abs(as.numeric(history$date) - at))
+    if (abs(as.numeric(history$date[near]) - at) > 1) return(format(as.Date(round(at), origin = "1970-01-01"), "%Y-%m-%d"))
+    sprintf("%s | median %.0f%% full | 90th percentile %.0f%% full | radius %s", format(history$date[near], "%Y-%m-%d"),
+            100 * history$fullness_median[near], 100 * history$fullness_p90[near], history$radius_mode[near])
+  })
 
   output$fullnessPlot <- renderPlot({
     history <- growth_fit()$history
@@ -1049,7 +1149,8 @@ server <- function(input, output, session) {
       geom_line(linewidth = 1) +
       scale_colour_manual(values = c("Median" = swarm_colours$text, "90th percentile" = swarm_colours$orange)) +
       swarm_plot_theme + swarm_readable_text +
-      labs(x = NULL, y = "Reserve full (%)")
+      labs(x = NULL, y = "Reserve full (%)") +
+      zoom_coord(zoom_limits(fullness_zoom(), list(data.frame(x = long$date, y = long$share))), "date")
   }, bg = swarm_colours$bg)
 
   # table of staked overlays from the chain, with each one's latest reveal in the window

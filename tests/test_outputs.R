@@ -78,7 +78,7 @@ expected_max_radius <- function(bits, minimum) {
 
 all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
-                 "price_balance", "price_balance_note", "price_balance_text", "growth_summary", "growthPlot", "fullnessPlot",
+                 "price_balance", "price_balance_note", "price_balance_text", "growth_summary", "growthPlot", "fullnessPlot", "growthPlot_hover", "fullnessPlot_hover", "pricePlot_hover",
                  "storage_taken", "max_radius", "max_capacity",
                  "reachability_status", "nodes_count", "distPlot", "explainer_text_1", "stats_table", "nodes_data",
                  "stakes_table")
@@ -564,6 +564,14 @@ testServer(server, {
         length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
         paste("fitted", fitted))
   check("price tab - the calibration counts exclude extra nodes", grepl(sprintf("against %.2f active staked", mean(n)), output$price_calibration))
+  head_time <- as.numeric(chain_cache$data$head_time)
+  session$setInputs(pricePlot_pointer = list(x = head_time - 3600, y = 1))
+  check("price tab - the pointer reads the price on chain", grepl("price", output$pricePlot_hover) && !grepl("projection", output$pricePlot_hover),
+        output$pricePlot_hover)
+  session$setInputs(pricePlot_pointer = list(x = head_time + 10 * 86400, y = 1))
+  check("price tab - in the future the pointer reads the projection", grepl("projection", output$pricePlot_hover), output$pricePlot_hover)
+  session$setInputs(pricePlot_brush = list(xmin = head_time - 4 * 3600, xmax = head_time + 86400))
+  check("price tab - the plot renders zoomed in", !inherits(output_or_error(output$pricePlot), "output_error"))
   session$setInputs(horizonDays = 0)
   check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
 })
@@ -615,6 +623,17 @@ check("storage - too little history gives no fit", is.null(fit_growth(synthetic[
 projection <- project_growth(fit, 30)
 check("storage - the projection reaches the horizon for both fits", max(projection$date) == max(days) + 30 && setequal(projection$fit, c("Straight line", "Exponential")))
 
+# zoom and pointer helpers (R/time_plots.R)
+pts <- data.frame(x = as.Date("2026-01-01") + 0:9, y = c(1, 2, 3, 10, 5, 6, 7, 8, 9, 4))
+lim <- zoom_limits(as.numeric(as.Date(c("2026-01-02", "2026-01-04"))), list(pts))
+check("zoom - y covers only the points in view, with some room", lim$y[1] < 2 && lim$y[1] > 1.4 && lim$y[2] > 10 && lim$y[2] < 10.5)
+check("zoom - no zoom is the whole plot", is.null(zoom_limits(NULL, list(pts))))
+check("zoom - the coordinates take date limits", inherits(zoom_coord(lim, "date")$limits$x, "Date"))
+at <- as.numeric(as.Date("2026-01-04")) + 0.3
+check("pointer - nearest point", value_at(pts, at) == 10)
+check("pointer - a step series holds the last value", value_at(pts, as.numeric(as.Date("2026-01-05")) - 0.1, step = TRUE) == 10)
+check("pointer - outside a series gives NA", is.na(value_at(pts, as.numeric(as.Date("2026-02-01")), max_gap = 0)))
+
 storage_history_data <- synthetic
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
@@ -624,6 +643,25 @@ testServer(server, {
           grepl("radius rises to 10 on 20", summary, fixed = TRUE) && grepl("radius falls to 8 on no date", summary, fixed = TRUE), summary)
   check("growth tab - plots render", !inherits(output_or_error(output$growthPlot), "output_error") &&
           !inherits(output_or_error(output$fullnessPlot), "output_error"))
+  check("growth tab - hint until the pointer is over the plot", output$growthPlot_hover == time_plot_hint)
+  at <- as.numeric(as.Date("2026-08-01"))
+  session$setInputs(growthPlot_pointer = list(x = at + 0.2, y = 6))
+  hover <- output$growthPlot_hover
+  expected_stored <- synthetic$stored_tib[synthetic$date == as.Date("2026-08-01") & synthetic$measure == "within radius"]
+  check("growth tab - the pointer reads the date and the stored data", grepl("2026-08-01", hover, fixed = TRUE) &&
+          grepl(sprintf("stored %s TiB at radius 9", format_number(round(expected_stored, 2))), hover, fixed = TRUE), hover)
+  session$setInputs(growthPlot_pointer = list(x = as.numeric(as.Date("2026-12-01")), y = 7))
+  future <- output$growthPlot_hover
+  check("growth tab - in the future the pointer reads the fits", grepl("straight line", future) && grepl("exponential", future) && !grepl("stored", future), future)
+  session$setInputs(fullnessPlot_pointer = list(x = at, y = 80))
+  check("growth tab - the fullness pointer reads median and 90th percentile", grepl("2026-08-01 | median", output$fullnessPlot_hover, fixed = TRUE))
+  # drag to zoom, double-click to zoom out: the plot renders both ways
+  session$setInputs(growthPlot_brush = list(xmin = as.numeric(as.Date("2026-07-01")), xmax = as.numeric(as.Date("2026-09-01"))))
+  check("growth tab - the plot renders zoomed in", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(growthPlot_dblclick = list(x = at, y = 6))
+  check("growth tab - the plot renders zoomed out again", !inherits(output_or_error(output$growthPlot), "output_error"))
+  session$setInputs(growthPlot_brush = list(xmin = as.numeric(as.Date("2026-07-01")), xmax = as.numeric(as.Date("2026-09-01"))), growthPlot_zoomout = 1)
+  check("growth tab - the Zoom out link renders the whole plot", !inherits(output_or_error(output$growthPlot), "output_error"))
   session$setInputs(fitDays = 3)
   check("growth tab - a fit window under 7 days shows a message", grepl("Fit over 7 days", output_or_error(output$growth_summary)))
 })
