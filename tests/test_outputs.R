@@ -825,6 +825,20 @@ check("bootnodes - peers, hosts and WSS", length(unique(bt$peer)) == 3 && length
 bl <- bootnode_load(3, 600, 30, 3, 100)
 check("bootnodes - Little's law", bl$concurrent == 300 && bl$load == 3 && bl$max_joins_per_min == 200)
 check("bootnodes - a client cannot dial more bootnodes than there are", bootnode_load(2, 600, 30, 5, 100)$per_client == 2)
+# a bootnode with addresses on two hosts counts once, on the first; the totals stay those of the model
+two_hosts <- bootnode_table(c(resolved, "/ip6/2001:db8::1/tcp/1634/p2p/QmC"))
+bh2 <- bootnode_hosts(two_hosts, 600, 30, 3, 100)
+check("bootnodes - a bootnode on two hosts is counted once", bh2$bootnodes == 3 && sum(bh2$hosts$bootnodes) == 3 &&
+        sum(bh2$hosts$concurrent) == 3 * bh2$load$concurrent)
+# the cache keeps the last good list when part of the lookup fails, and tries again sooner
+bootnode_cache$next_attempt <- -Inf
+check("bootnodes - the cache resolves the default list", length(refresh_bootnode_cache(doh_txt)) == 4 && is.null(bootnode_cache$last_error))
+partial <- function(name) if (name == "b.mainnet.ethswarm.org") character(0) else doh_txt(name)
+bootnode_cache$next_attempt <- -Inf
+check("bootnodes - a partial answer keeps the last good list", length(refresh_bootnode_cache(partial)) == 4 &&
+        grepl("b.mainnet.ethswarm.org", bootnode_cache$last_error) &&
+        as.numeric(bootnode_cache$next_attempt) - as.numeric(current_time()) <= retry_with_data_secs)
+bootnode_cache$next_attempt <- -Inf; refresh_bootnode_cache(doh_txt)
 bh <- bootnode_hosts(bt, 600, 30, 3, 100)
 check("bootnodes - per IP address and losing the busiest", bh$bootnodes == 3 && bh$busiest_host == "198.18.1.1" &&
         identical(bh$hosts$bootnodes, c(2L, 1L)) && bh$without_busiest$per_client == 1 && bh$without_busiest$concurrent == 300)
@@ -840,6 +854,9 @@ testServer(server, {
           grepl("If 198.18.1.1 (2 of the 3 bootnodes) is lost", output$bootnode_lose_host, fixed = TRUE))
   session$setInputs(bootnodeWssOnly = TRUE)
   check("bootnode tab - WSS only keeps the bootnodes with a WSS address", grepl("1 bootnodes (peer IDs)", output$bootnode_list_note, fixed = TRUE))
+  session$setInputs(bootnodeSource = "pasted", bootnodeList = "/ip4/198.18.2.1/tcp/1634/p2p/QmX")
+  check("bootnode tab - WSS only with no WSS address says so", grepl("None of these bootnodes has a WSS address", output_or_error(output$bootnode_list_note)))
+  session$setInputs(bootnodeSource = "default")
   session$setInputs(bootnodeWssOnly = FALSE, bootnodeSource = "pasted", bootnodeList = "")
   check("bootnode tab - an empty pasted list asks for addresses", grepl("Paste one or more multiaddresses", output_or_error(output$bootnode_list_note)))
   session$setInputs(bootnodeList = "/ip4/198.18.2.1/tcp/1634/p2p/QmX\n/ip4/198.18.2.2/tcp/1634/p2p/QmY")

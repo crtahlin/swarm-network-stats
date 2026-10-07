@@ -56,10 +56,12 @@ bootnode_load <- function(bootnodes, joins_per_min, hold_secs, dialled, limit) {
 }
 
 # the same per host (IP address): bootnodes on each host and their concurrent connections, and the
-# load if the host with the most bootnodes is lost and its share moves to the others
+# load if the host with the most bootnodes is lost and only the bootnodes on other hosts are left.
+# A bootnode with addresses on several hosts is counted once, on the host of its first address
 bootnode_hosts <- function(table, joins_per_min, hold_secs, dialled, limit) {
-  nodes <- unique(table[, c("peer", "host")])
-  n <- length(unique(nodes$peer))
+  table <- table[order(is.na(table$host)), ]
+  nodes <- table[!duplicated(table$peer), c("peer", "host")]
+  n <- nrow(nodes)
   load <- bootnode_load(n, joins_per_min, hold_secs, dialled, limit)
   hosts <- aggregate(peer ~ host, data = transform(nodes, host = ifelse(is.na(host), "(unknown)", host)),
                      FUN = function(p) length(unique(p)))
@@ -82,7 +84,13 @@ bootnode_cache$next_attempt <- -Inf
 refresh_bootnode_cache <- function(lookup = doh_txt) {
   now <- current_time()
   if (as.numeric(now) >= as.numeric(bootnode_cache$next_attempt)) {
-    result <- tryCatch(resolve_dnsaddr(bee_default_bootnode, lookup), error = function(e) e)
+    # a name with no records fails the whole lookup, so a partial answer never replaces a full list
+    strict <- function(name) {
+      records <- lookup(name)
+      if (length(records) == 0) stop("no dnsaddr records for ", name)
+      records
+    }
+    result <- tryCatch(resolve_dnsaddr(bee_default_bootnode, strict), error = function(e) e)
     if (inherits(result, "error") || length(result) == 0) {
       bootnode_cache$last_error <- if (inherits(result, "error")) conditionMessage(result) else "no addresses"
       bootnode_cache$next_attempt <- now + retry_with_data_secs

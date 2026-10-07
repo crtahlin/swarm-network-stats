@@ -575,8 +575,9 @@ ui <-
               div(class = "section-label", "Max concurrent clients by peers per client"),
               plotOutput("lightPlot", height = "400px"),
               div(class = "section-label", "Bootnode load while clients join"),
-              p("A joining client dials bootnodes to find its first peers. Each of those connections counts against the bootnode's ",
-                "light-node-limit for as long as the client keeps it. How many bootnodes a client dials and how long it keeps them ",
+              p("A joining client dials bootnodes to find its first peers. A bootnode counts a client that is not a full node ",
+                "against its light-node-limit for as long as the connection is open, as any full node does (bee's bootnode mode ",
+                "changes only how it treats full peers). How many bootnodes a client dials and how long it keeps them ",
                 "depends on the client; set them below."),
               layout_column_wrap(
                 width = 1/2, fill = FALSE,
@@ -1307,15 +1308,19 @@ server <- function(input, output, session) {
   # bootnode load while clients join
   bootnode_addresses <- reactive({
     if (identical(input$bootnodeSource, "pasted")) return(parse_multiaddrs(input$bootnodeList))
-    # resolved only while the tab is open (hidden outputs are not computed); refreshed every 6 hours
-    invalidateLater(bootnode_refresh_secs * 1000)
-    refresh_bootnode_cache()
+    # resolved only while the tab is open (hidden outputs are not computed); refreshed every 6 hours,
+    # or tried again sooner after a failed lookup
+    addresses <- refresh_bootnode_cache()
+    invalidateLater(1000 * if (is.null(bootnode_cache$last_error)) bootnode_refresh_secs else retry_with_data_secs)
+    addresses
   })
   bootnode_model <- reactive({
     table <- bootnode_table(bootnode_addresses())
-    if (isTRUE(input$bootnodeWssOnly)) table <- table[table$wss, ]
     shiny::validate(shiny::need(nrow(table) > 0, if (identical(input$bootnodeSource, "pasted")) "Paste one or more multiaddresses." else
-      paste0("bee's default bootnodes could not be resolved", if (!is.null(bootnode_cache$last_error)) paste0(" (", bootnode_cache$last_error, ")") else "", ".")))
+      paste0("bee's default bootnodes could not be resolved", if (!is.null(bootnode_cache$last_error)) paste0(" (", bootnode_cache$last_error, ")") else "",
+             ". Trying again every few minutes.")))
+    if (isTRUE(input$bootnodeWssOnly)) table <- table[table$wss, ]
+    shiny::validate(shiny::need(nrow(table) > 0, "None of these bootnodes has a WSS address."))
     set <- isTRUE(input$joinsPerMinute >= 0) && isTRUE(input$bootnodeHoldSecs >= 0) && isTRUE(input$bootnodesDialled >= 1) &&
       isTRUE(input$bootnodeLimit >= 1)
     list(table = table, set = set,
@@ -1365,6 +1370,7 @@ server <- function(input, output, session) {
   output$bootnode_lose_host <- renderText({
     m <- bootnode_model()
     if (!m$set || nrow(m$hosts$hosts) < 2) return("")
+    # each bootnode is counted on one host, so with two or more hosts some bootnodes are left
     without <- m$hosts$without_busiest
     sprintf("If %s (%s of the %s bootnodes) is lost, the other bootnodes each take about %s concurrent connections (%s%% of the light-node-limit), and the maximum is about %s joining clients per minute.",
             m$hosts$busiest_host, format_number(m$hosts$hosts$bootnodes[1]), format_number(m$hosts$bootnodes),
