@@ -14,7 +14,8 @@ chain_fixture <- jsonlite::fromJSON("tests/fixtures/chain-sample.json", simplify
 fake_rpc <- new.env()
 fake_rpc$head <- chain_fixture$head_block  # the head the fake chain reports, before confirmations
 fake_rpc$max_logs <- Inf                   # a log query with more results than this is refused
-fake_rpc$empty_over <- Inf                 # a log query with more results than this gets an empty list, without an error
+fake_rpc$empty_over <- Inf
+fake_rpc$seconds_per_block <- 5            # block headers are this many seconds apart                 # a log query with more results than this gets an empty list, without an error
 fake_rpc$fail <- FALSE                     # TRUE: every request fails as an HTTP error
 fake_rpc$drop_calls <- 0                   # this many eth_calls in batches are refused, then answered
 fake_rpc$requests <- 0
@@ -28,7 +29,7 @@ fake_answer <- function(call) {
     eth_getBlockByNumber = {
       block <- hex_to_number(params[[1]])
       answer(list(number = params[[1]], timestamp = sprintf("0x%x",
-        hex_to_number(chain_fixture$head_timestamp) - 5 * (chain_fixture$head_block - block))))
+        round(hex_to_number(chain_fixture$head_timestamp) - fake_rpc$seconds_per_block * (chain_fixture$head_block - block)))))
     },
     eth_getLogs = {
       filter <- params[[1]]

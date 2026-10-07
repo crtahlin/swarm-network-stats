@@ -116,7 +116,7 @@ for (variant in variants) {
   for (full in c(TRUE, FALSE)) for (radius in c(4, 9)) {
     testServer(server, {
       session$setInputs(storageRadius = radius, minNodesPerNbhood = 2, onlyFullNodes = full, activeDays = 0.25, showUnstaked = full,
-                        participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                        participation = 100, horizonDays = 90, blockSeconds = "now", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
                         clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
                         listNodes = 0, expectedClients = 4000, bootnodeSource = "default", bootnodeWssOnly = FALSE,
                         joinsPerMinute = 600, bootnodeHoldSecs = 30, bootnodesDialled = 3, bootnodeLimit = 100)
@@ -554,6 +554,15 @@ since_first <- as.numeric(difftime(chain$head_time, raw_price$time[1], units = "
 check("price - observed change from the first update when the history is shorter",
       isTRUE(all.equal(observed_drift(chain$prices, chain$price, chain$head_time, 2), log(chain$price / raw_price$price[1]) / since_first)))
 check("price - no history gives no observed change", is.na(observed_drift(chain$prices[0, ], chain$price, chain$head_time, 1)))
+# the block time comes from the block headers of the window start and the head: the fake chain's
+# headers are 5 seconds apart, then 5.11
+check("price - the block time is measured from the block headers", isTRUE(all.equal(measured_block_seconds(chain), 5)))
+fake_rpc$seconds_per_block <- 5.11
+check("price - a slower chain gives a longer block time", abs(measured_block_seconds(fetch_chain_data()) - 5.11) < 0.001)
+fake_rpc$seconds_per_block <- 5
+check("price - too few blocks give no measured block time",
+      is.na(measured_block_seconds(list(to_block = 100, window_start = 50, head_time = chain$head_time, window_start_time = chain$head_time))) &&
+        is.na(measured_block_seconds(list(to_block = 1e6, window_start = 0))))
 stats <- round_stats(chain, 0.25)
 truth_rounds_window <- unique(truth_rounds)
 complete <- truth_rounds_window[truth_rounds_window <= chain$to_block %/% 152 - 1 & truth_rounds_window >= ceiling(chain$window_start / 152)]
@@ -583,16 +592,19 @@ slider_updates <- list()
 updateSliderInput <- function(session, inputId, ...) slider_updates[[length(slider_updates) + 1]] <<- list(id = inputId, value = list(...)$value)
 testServer(server, {
   session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
-                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+                    participation = 100, horizonDays = 90, blockSeconds = "now", extraNodes = 0)
   n <- nbhood_tiles(nbhood_members(chain_cache$data$stakes, last_reveals(chain_cache$data, 0.25), swarm_cache$data$nodes, 4), 4, FALSE)$active
   observed <- observed_drift(chain_cache$data$prices, chain_cache$data$price, chain_cache$data$head_time, 0.25)
-  fitted <- fit_participation(n, observed, oracle, 5)
+  measured <- measured_block_seconds(chain_cache$data)
+  fitted <- fit_participation(n, observed, oracle, measured)
   output$price_calibration
   check("price tab - the participation starts at the fitted value",
         length(slider_updates) == 1 && slider_updates[[1]]$id == "participation" && slider_updates[[1]]$value == round(100 * fitted),
         paste("fitted", fitted, "updates", length(slider_updates)))
   slider_updates <<- list()
-  check("price tab - model change matches the model", output$price_model_change == sprintf("%+.2f%%", drift_percent(model_drift(n, 1, oracle, 5))))
+  check("price tab - model change matches the model at the measured block time",
+        output$price_model_change == sprintf("%+.2f%%", drift_percent(model_drift(n, 1, oracle, measured))))
+  check("price tab - the calibration gives the measured block time", grepl(sprintf("Blocks took %.2f seconds", measured), output$price_calibration, fixed = TRUE))
   full_change <- output$price_model_change
   session$setInputs(participation = 50)
   check("price tab - lower participation raises the change", as.numeric(sub("%", "", output$price_model_change)) > as.numeric(sub("%", "", full_change)))
@@ -635,7 +647,7 @@ testServer(server, {
 chain_cache$data$oracle$paused <- TRUE
 testServer(server, {
   session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
-                    participation = 50, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+                    participation = 50, horizonDays = 90, blockSeconds = "now", extraNodes = 0)
   check("price tab - paused: the model change is 0", output$price_model_change == "+0.00%", output$price_model_change)
   check("price tab - paused: the price at the horizon is today's", output$price_at_horizon == output$price_now)
   check("price tab - paused: the calibration says so, without a fitted participation", grepl("paused", output$price_calibration) &&
@@ -718,7 +730,7 @@ check("pointer - outside a series gives NA", is.na(value_at(pts, as.numeric(as.D
 storage_history_data <- synthetic
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
-                    participation = 100, horizonDays = 90, blockSeconds = "5", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
+                    participation = 100, horizonDays = 90, blockSeconds = "now", extraNodes = 0, fitDays = 90, growthHorizon = 180, assumedGrowth = 0,
                         clientConnections = 200, startDials = 0, listLimit = 100, otherLimit = 100,
                         listNodes = 0, expectedClients = 4000, bootnodeSource = "default", bootnodeWssOnly = FALSE,
                         joinsPerMinute = 600, bootnodeHoldSecs = 30, bootnodesDialled = 3, bootnodeLimit = 100)

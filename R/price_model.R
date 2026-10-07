@@ -10,6 +10,15 @@
 # the drawn neighbourhood reveals a matching hash with probability q (the participation), so the
 # redundancy follows a binomial distribution. A redundancy of 0 means no claim
 
+# the average block time in seconds over the window, from the block headers of the window's first
+# block and the head. NA when there is no start time or the window has fewer than 1,000 blocks
+measured_block_seconds <- function(chain) {
+  if (is.null(chain$window_start_time)) return(NA_real_)
+  blocks <- chain$to_block - chain$window_start
+  if (blocks < 1000) return(NA_real_)
+  as.numeric(difftime(chain$head_time, chain$window_start_time, units = "secs")) / blocks
+}
+
 # rounds per day for a block time in seconds (a round is 152 blocks)
 rounds_per_day <- function(block_seconds) 86400 / (round_length_blocks * block_seconds)
 

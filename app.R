@@ -479,7 +479,7 @@ ui <-
                 sliderInput("participation", "Participation, calibrated (%)", min = 0, max = 100, value = 100, step = 1),
                 numericInput("horizonDays", "Horizon (days)", value = 90, min = 1, max = 730, step = 1),
                 radioButtons("blockSeconds", "Gnosis block time",
-                             choices = c("5 seconds (now)" = 5, "2 seconds from today (GIP-153), no repricing" = 2), selected = 5),
+                             choices = c("Now, measured from the chain" = "now", "2 seconds from today (GIP-153), no repricing" = 2), selected = "now"),
                 numericInput("extraNodes", "Extra staked nodes in each neighbourhood with fewer than 4",
                              value = 0, min = 0, max = 10, step = 1)
               ),
@@ -995,9 +995,9 @@ server <- function(input, output, session) {
     observed_drift(chain$prices, chain$price, chain$head_time, input$activeDays)
   })
   # the participation that reproduces the observed change with the real counts (no extra nodes),
-  # at today's 5-second blocks; NA if none does
+  # at the measured block time; NA if none does
   fitted_participation <- reactive({
-    fit_participation(price_active_counts(), price_observed(), chain_data_polled()$oracle, 5)
+    fit_participation(price_active_counts(), price_observed(), chain_data_polled()$oracle, price_block_seconds_now())
   })
   # the participation starts at the fitted value: set once when the data first allows a fit,
   # unless the slider was already moved from 100%
@@ -1010,10 +1010,15 @@ server <- function(input, output, session) {
     if (!is.na(fitted)) updateSliderInput(session, "participation", value = round(100 * fitted))
   })
 
+  # today's block time, measured from the reveals read; 5 seconds, Gnosis's target, until enough are read
+  price_block_seconds_now <- reactive({
+    measured <- measured_block_seconds(chain_data_polled())
+    if (is.na(measured)) 5 else measured
+  })
   price_settings <- reactive({
     shiny::validate(shiny::need(isTRUE(input$horizonDays > 0), "Enter a horizon of 1 day or more."))
     shiny::validate(shiny::need(isTRUE(input$participation >= 0 && input$participation <= 100), "Set a participation from 0 to 100%."))
-    list(q = input$participation / 100, block_seconds = as.numeric(input$blockSeconds), days = input$horizonDays)
+    list(q = input$participation / 100, block_seconds = if (identical(input$blockSeconds, "2")) 2 else price_block_seconds_now(), days = input$horizonDays)
   })
   price_model <- reactive({
     chain <- chain_data_polled()
@@ -1077,13 +1082,16 @@ server <- function(input, output, session) {
   output$price_calibration <- renderText({
     chain <- chain_data_polled()
     fitted <- fitted_participation()
-    rounds <- round_stats(chain, input$activeDays)
+    rounds <- round_stats(chain, input$activeDays, price_block_seconds_now())
+    measured <- measured_block_seconds(chain)
     fit_text <- if (isTRUE(chain$oracle$paused)) "" else if (is.na(fitted)) {
       "No participation reproduces the observed change with these neighbourhood counts."
     } else {
       sprintf("A participation of %.0f%% reproduces the observed change.", 100 * fitted)
     }
-    paste(fit_text, sprintf(
+    block_text <- if (is.na(measured)) "Not enough blocks read to measure the block time; 5 seconds is assumed." else
+      sprintf("Blocks took %.2f seconds on average over the window, %s rounds a day.", measured, format_number(round(rounds_per_day(measured), 1)))
+    paste(fit_text, block_text, sprintf(
       "On chain over the same %s days: %s rounds, %s of them claimed (%.1f%% not claimed), with %.2f matching reveals per claimed round on average, against %.2f active staked nodes per neighbourhood.",
       format_number(input$activeDays), format_number(rounds$rounds), format_number(rounds$claimed),
       100 * (1 - rounds$claimed / max(rounds$rounds, 1)), rounds$mean_matching, mean(price_active_counts())),

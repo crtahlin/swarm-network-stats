@@ -240,6 +240,9 @@ fetch_chain_data <- function(previous = NULL) {
   window_start <- max(head_block - ceiling(chain_window_days * 86400 / seconds_per_block),
                       chain_contracts$redistribution$deployed)
   from <- if (is.null(previous)) window_start else max(previous$to_block + 1, window_start)
+  # the window start's own block time, to measure the real block time over the window
+  start <- rpc_call("eth_getBlockByNumber", list(sprintf("0x%x", window_start), FALSE))
+  window_start_time <- as.POSIXct(hex_to_number(start$timestamp), origin = "1970-01-01", tz = "UTC")
   date_logs <- function(logs) {
     missing <- is.na(logs$time)
     logs$time[missing] <- head_time - (head_block - logs$block[missing]) * seconds_per_block
@@ -277,7 +280,7 @@ fetch_chain_data <- function(previous = NULL) {
 
   price <- hex_to_number(rpc_call("eth_call", list(list(to = chain_contracts$price_oracle$address,
                                                         data = chain_selectors$current_price), "latest")))
-  list(to_block = head_block, head_time = head_time, window_start = window_start,
+  list(to_block = head_block, head_time = head_time, window_start = window_start, window_start_time = window_start_time,
        price = price, prices = prices, reveals = reveals, truths = truths, anchors = anchors, pots = pots, owners = owners,
        stakes = read_stakes(owners, price, head_block), oracle = read_oracle())
 }
