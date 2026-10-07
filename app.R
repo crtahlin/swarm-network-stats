@@ -275,8 +275,8 @@ stakes_table_columns <- c(
   "Height" = "Reserve doubling: how many times the node has doubled its storage",
   "Frozen" = "Whether the stake is currently frozen",
   "Can play" = "Whether the node can take part in the game now: staked at least 2 rounds ago and not frozen",
-  "Last reveal (UTC)" = paste0("Time of the node's latest reveal in the last ", chain_window_days, " days; empty if it has not played in that time"),
-  "Last round" = paste0("Round of the node's latest reveal in the last ", chain_window_days, " days; empty if it has not played in that time"),
+  "Last reveal (UTC)" = "Time of the node's latest reveal within the days set in the sidebar (Active within); empty if it has not played in that time",
+  "Last round" = "Round of the node's latest reveal within the days set in the sidebar (Active within); empty if it has not played in that time",
   "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
   "In swarmscan" = "Whether swarmscan lists the node at all"
 )
@@ -648,7 +648,7 @@ ui <-
               br(),
               div(class = "section-label", "Staked nodes (Gnosis chain)"),
               p("Every overlay with stake in the staking contract, and its latest reveal in the redistribution game ",
-                "within the last ", chain_window_days, " days. Effective stake is what the game weighs: the committed stake at today's ",
+                "within the days set in the sidebar (Active within, at most ", chain_window_days, "). Effective stake is what the game weighs: the committed stake at today's ",
                 "price, capped at the deposit, and 0 while frozen. A node can play once its stake is at least 2 rounds ",
                 "old and not frozen. The truth match is empty for a round that has not been claimed."),
               DT::dataTableOutput("stakes_table"))
@@ -1554,8 +1554,10 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(!is.null(chain),
                                 paste0("No data from the Gnosis chain yet (", chain_cache$last_error, "). Retrying every minute.")))
     shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
+    shiny::validate(shiny::need(isTRUE(input$activeDays > 0 && input$activeDays <= chain_window_days),
+                                paste0("Enter an active period of at most ", chain_window_days, " days.")))
     stakes <- chain_stakes(chain)
-    latest <- last_reveals(chain, chain_window_days)
+    latest <- last_reveals(chain, input$activeDays)
     reveal <- latest[match(stakes$overlay, latest$overlay), ]
     # the swarmscan dump, when there is one, says whether swarmscan sees the node at all
     dump_overlays <- swarm_data_polled()$nodes$overlay

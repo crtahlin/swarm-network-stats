@@ -351,7 +351,7 @@ refresh_chain_cache()
 check("chain cache - a failed refresh keeps the last good data", !is.null(chain_cache$data) && grepl("The last read failed", chain_status_text()))
 fake_rpc$fail <- FALSE
 testServer(server, {
-  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE)
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days)
   check("chain - the sidebar shows the chain status", grepl("staked overlays", output$chain_status))
 
   # Nodes info: the stakes table has every staked overlay, its nbhood and its latest reveal
@@ -373,6 +373,13 @@ testServer(server, {
   session$setInputs(storageRadius = 4)
   output$stakes_table
   check("stakes table - nbhood follows the radius", all(nchar(captured("stakes_table")$nbhood) == 4))
+  # a shorter active period keeps only the reveals in it
+  session$setInputs(activeDays = 0.05)
+  output$stakes_table
+  short <- captured("stakes_table")
+  recent <- last_reveals(chain, 0.05)
+  check("stakes table - last reveals follow the active period", sum(!is.na(short$last_round)) == nrow(recent) &&
+          nrow(recent) < sum(revealed) && nrow(recent) > 0, paste(nrow(recent), sum(revealed)))
 })
 
 ### Nbhood map (R/nbhood_map.R)
