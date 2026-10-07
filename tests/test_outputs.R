@@ -302,6 +302,16 @@ split <- fetch_chain_data()
 check("chain - refused log queries are split and give the same data", same_data(split, chain) && fake_rpc$requests > 10)
 fake_rpc$max_logs <- Inf
 
+# an RPC that answers an empty list over its limit (issue #50) loses data on a long query; reading
+# in pieces of at most logs_max_span blocks keeps every query under the limit
+fake_rpc$empty_over <- 100
+saved_span <- logs_max_span; logs_max_span <- 1e9
+check("chain - an empty answer over the limit loses data when queries are not capped", !same_data(fetch_chain_data(), chain))
+logs_max_span <- 1000; fake_rpc$requests <- 0
+capped <- fetch_chain_data()
+check("chain - log queries capped at logs_max_span blocks give the same data", same_data(capped, chain) && fake_rpc$requests > 10)
+logs_max_span <- saved_span; fake_rpc$empty_over <- Inf
+
 # a network error or timeout on a log query stops the read at once instead of splitting the query
 answering_post <- rpc_post
 rpc_post <- function(body) {
@@ -607,9 +617,34 @@ testServer(server, {
   check("price tab - in the future the pointer reads the projection", grepl("projection", output$pricePlot_hover), output$pricePlot_hover)
   session$setInputs(pricePlot_brush = list(xmin = head_time - 4 * 3600, xmax = head_time + 86400))
   check("price tab - the plot renders zoomed in", !inherits(output_or_error(output$pricePlot), "output_error"))
+  rs <- round_stats(chain_cache$data, 0.25)
+  # from the raw fixture: every TruthSelected log in it has depth 9 (its second data word)
+  raw_truth <- Filter(function(l) l$topics[[1]] == chain_topics$truth, chain_fixture$logs[[tolower(chain_contracts$redistribution$address)]])
+  check("price tab - the truths' depth is read from TruthSelected",
+        all(vapply(raw_truth, function(l) hex_to_number(substr(l$data, 67, 130)), 0) == 9) && rs$truth_depth == 9, rs$truth_depth)
+  check("price tab - the truths' depth is shown against the radius",
+          grepl("truths were at depth 9, but the sidebar radius is 4", output$price_calibration, fixed = TRUE), output$price_calibration)
+  session$setInputs(storageRadius = 9)
+  check("price tab - no warning when the radius is the truths' depth", grepl("the radius set in the sidebar", output$price_calibration) &&
+          !grepl("Warning", output$price_calibration))
+  session$setInputs(storageRadius = 4)
   session$setInputs(horizonDays = 0)
   check("price tab - a horizon of 0 shows a message", grepl("Enter a horizon", output_or_error(output$price_at_horizon)))
 })
+# while the price oracle is paused, the projection holds the price flat
+chain_cache$data$oracle$paused <- TRUE
+testServer(server, {
+  session$setInputs(storageRadius = 4, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = 0.25, showUnstaked = FALSE,
+                    participation = 50, horizonDays = 90, blockSeconds = "5", extraNodes = 0)
+  check("price tab - paused: the model change is 0", output$price_model_change == "+0.00%", output$price_model_change)
+  check("price tab - paused: the price at the horizon is today's", output$price_at_horizon == output$price_now)
+  check("price tab - paused: the calibration says so, without a fitted participation", grepl("paused", output$price_calibration) &&
+          !grepl("reproduces the observed change", output$price_calibration))
+  check("price tab - paused: no nodes to hold the price flat", output$price_balance == "–" && grepl("paused", output$price_balance_note))
+  session$setInputs(extraNodes = 2)
+  check("price tab - paused: the line without extra nodes is flat too", all(price_series()$plain$y == price_series()$plain$y[1]))
+})
+chain_cache$data$oracle$paused <- FALSE
 rm(updateSliderInput)
 
 ### Storage growth (R/storage_history.R)

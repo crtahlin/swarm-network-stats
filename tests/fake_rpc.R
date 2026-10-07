@@ -14,6 +14,7 @@ chain_fixture <- jsonlite::fromJSON("tests/fixtures/chain-sample.json", simplify
 fake_rpc <- new.env()
 fake_rpc$head <- chain_fixture$head_block  # the head the fake chain reports, before confirmations
 fake_rpc$max_logs <- Inf                   # a log query with more results than this is refused
+fake_rpc$empty_over <- Inf                 # a log query with more results than this gets an empty list, without an error
 fake_rpc$fail <- FALSE                     # TRUE: every request fails as an HTTP error
 fake_rpc$drop_calls <- 0                   # this many eth_calls in batches are refused, then answered
 fake_rpc$requests <- 0
@@ -36,7 +37,8 @@ fake_answer <- function(call) {
         block <- hex_to_number(l$blockNumber)
         l$topics[[1]] == filter$topics[[1]] && block >= from && block <= to
       }, chain_fixture$logs[[tolower(filter$address)]])
-      if (length(logs) > fake_rpc$max_logs) refuse("query returned more than 10000 results") else answer(logs)
+      if (length(logs) > fake_rpc$max_logs) refuse("query returned more than 10000 results") else
+        if (length(logs) > fake_rpc$empty_over) answer(list()) else answer(logs)
     },
     eth_call = {
       to <- tolower(params[[1]]$to); data <- params[[1]]$data
