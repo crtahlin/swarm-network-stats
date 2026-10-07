@@ -84,8 +84,9 @@ nbhood_tiles <- function(members, radius, show_unstaked) {
   tiles$unstaked <- count(node_kinds[["unstaked"]])
   tiles$not_in_dump <- tabulate(match(members$nbhood[!members$in_swarmscan], nbhoods), nbins = length(nbhoods))
   tiles$shown <- tiles$active + if (show_unstaked) tiles$unstaked else 0
-  # colour classes; 4 is the price oracle's target number of matching reveals per round
-  tiles$class <- factor(pmin(tiles$shown, 4), levels = 0:4, labels = c("0", "1", "2", "3", "4 or more"))
+  # colour classes; 4 is the price oracle's target number of matching reveals per round. Fewer
+  # raise the price, more lower it, so both sides of 4 are off target
+  tiles$class <- factor(pmin(tiles$shown, 5), levels = 0:5, labels = c("0", "1", "2", "3", "4", "5 or more"))
   tiles
 }
 

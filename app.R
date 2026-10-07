@@ -398,8 +398,9 @@ ui <-
               div(class = "section-label", "Staked nodes per neighbourhood"),
               p("One tile per neighbourhood at the storage radius set in the sidebar. Sister neighbourhoods, ",
                 "the two halves one split would create, sit next to each other. The colour counts staked nodes ",
-                "that revealed in the redistribution game within the days set in the sidebar; 4 is the number ",
-                "of matching reveals per round the price oracle aims for. A node with reserve doubling stores ",
+                "that revealed in the redistribution game within the days set in the sidebar. 4 (light green) is the number ",
+                "of matching reveals per round the price oracle aims for: fewer raise the price, more (dark green) lower it ",
+                "and spread the rewards thinner. A node with reserve doubling stores ",
                 "several neighbourhoods and counts in each. Point at a tile for its counts; click it to list its nodes."),
               p("Light and ultra-light nodes are not shown: swarmscan does not list them, and their place in the ",
                 "network cannot be worked out from chain data."),
@@ -666,7 +667,7 @@ server <- function(input, output, session) {
     plot <- ggplot(tiles, aes(x = x, y = -y, fill = class)) +
       geom_tile(colour = swarm_colours$bg, linewidth = if (radius <= 10) 0.6 else 0) +
       scale_fill_manual(values = c("0" = swarm_colours$unreachable, "1" = swarm_colours$orange, "2" = swarm_colours$error,
-                                   "3" = "#7aa6c2", "4 or more" = swarm_colours$mint),
+                                   "3" = "#7aa6c2", "4" = swarm_colours$mint, "5 or more" = "#0a8a68"),
                         drop = FALSE,
                         name = if (isTRUE(input$showUnstaked)) "Staked and active, plus full\nnodes without stake" else "Staked and active") +
       coord_equal(expand = FALSE) +
@@ -676,7 +677,9 @@ server <- function(input, output, session) {
             legend.text = element_text(colour = swarm_colours$text, family = "mono"),
             legend.title = element_text(colour = swarm_colours$muted, family = "mono"))
     # the count in each tile while the tiles are big enough to read it (up to 1,024 tiles)
-    if (radius <= 10) plot <- plot + geom_text(aes(label = shown), colour = swarm_colours$bg, family = "mono", size = if (radius <= 8) 4 else 3)
+    # dark text on the light tiles, light text on the dark green ones
+    if (radius <= 10) plot <- plot + geom_text(aes(label = shown, colour = ifelse(class == "5 or more", swarm_colours$text, swarm_colours$bg)),
+                                               family = "mono", size = if (radius <= 8) 4 else 3) + scale_colour_identity()
     plot
   # the map keeps square tiles, so it does not fill the whole image; the rest takes the page colour
   }, bg = swarm_colours$bg)

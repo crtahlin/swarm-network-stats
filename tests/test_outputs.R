@@ -380,7 +380,7 @@ for (radius in c(4, 9)) {
           nrow(tiles) == 2^radius && sum(tiles$active) == sum(members$kind == node_kinds[["active"]]) &&
             sum(tiles$idle) == sum(members$kind == node_kinds[["idle"]]) && sum(tiles$unstaked) == nrow(unstaked_rows) &&
             all(tiles$shown == tiles$active + if (show) tiles$unstaked else 0) &&
-            all(as.character(tiles$class) == ifelse(tiles$shown >= 4, "4 or more", as.character(tiles$shown))))
+            all(as.character(tiles$class) == ifelse(tiles$shown >= 5, "5 or more", as.character(tiles$shown))))
   }
 }
 
