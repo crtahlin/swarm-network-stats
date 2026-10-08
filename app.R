@@ -1272,13 +1272,14 @@ server <- function(input, output, session) {
   output$price_clamp_note <- renderText({
     model <- price_model()
     sprintf(paste(
-      "Green, dashed: the redundancy clamp proposed in ethersphere/storage-incentives PR #322 (open, not deployed). The",
+      "Green, dashed: the redundancy clamp proposed in ethersphere/storage-incentives PR #322 (open and not deployed on 2026-10-08). The",
       "claim would pass the PriceOracle a matching-reveal count clamped to 3 to 5, so a claimed round moves the price by at most",
-      "one step: about %s a day up or %s a day down at the measured block time (doubling or halving in about %s days).",
+      "one step: about %s a day up or %s a day down at %s-second blocks (doubling or halving in about %s days).",
       "Rounds nobody claims are charged by the PriceOracle, which the PR does not change, so they still count as the",
       "largest rise. With the clamp the model's change is %s a day, against %s without it."),
       sprintf("%+.2f%%", drift_percent(rounds_per_day(model$settings$block_seconds) * log(model$chain$oracle$change_rate[4] / model$chain$oracle$price_base))),
       sprintf("%+.2f%%", drift_percent(rounds_per_day(model$settings$block_seconds) * log(model$chain$oracle$change_rate[6] / model$chain$oracle$price_base))),
+      format_number(round(model$settings$block_seconds, 2)),
       format_number(round(log(2) / (rounds_per_day(model$settings$block_seconds) * log(model$chain$oracle$change_rate[4] / model$chain$oracle$price_base)))),
       sprintf("%+.2f%%", drift_percent(model$clamped_drift)), sprintf("%+.2f%%", drift_percent(model$drift)))
   })
@@ -1288,8 +1289,9 @@ server <- function(input, output, session) {
     history <- model$chain$prices
     plot <- ggplot() +
       geom_step(data = history, aes(x = time, y = price), colour = swarm_colours$text, linewidth = 1) +
-      geom_line(data = model$clamped, aes(x = time, y = price), colour = swarm_colours$mint, linetype = "dashed", linewidth = 1.1) +
       geom_line(data = model$projection, aes(x = time, y = price), colour = swarm_colours$orange, linetype = "dashed", linewidth = 1.2) +
+      # drawn on top, so it stays visible where the clamp changes nothing
+      geom_line(data = model$clamped, aes(x = time, y = price), colour = swarm_colours$mint, linetype = "dashed", linewidth = 0.9) +
       geom_vline(xintercept = model$chain$head_time, colour = swarm_colours$muted, linetype = "dotted")
     plain <- price_series()$plain
     if (!is.null(plain)) {
