@@ -36,6 +36,8 @@ capture_plot <- function(expr, ...) {
 }
 captured <- function(name) readRDS(file.path(capture_dir, paste0(name, ".rds")))
 suppressWarnings(suppressPackageStartupMessages(eval(parse(text = src))))
+# reads run in this process, so they use the fake chain and the saved dump (R/background.R)
+background_reads <- FALSE
 # the chain answers from tests/fixtures/chain-sample.json; its window is 6 hours, as recorded
 source("tests/fake_rpc.R")
 # bee's default bootnodes resolve through a fake lookup: two levels of dnsaddr records, three bootnodes on two IP addresses,
@@ -236,7 +238,8 @@ testServer(server, {
   check("refresh - no data yet shows a message", grepl("No data from swarmscan yet \\(network down\\)", output_or_error(output$nodes_count)))
   mode <<- "ok"; clock <<- clock + 61; session$elapse(60 * 1000)
   check("refresh - data shown after recovery", grepl(paste("Total nodes:", format_number(fixture$count)), output$nodes_count))
-  mode <<- "fail"; clock <<- clock + 10 * 60 + 1; session$elapse(60 * 1000)
+  # the status line re-reads the cache every minute, so a failed read shows in it within two minutes
+  mode <<- "fail"; clock <<- clock + 10 * 60 + 1; session$elapse(121 * 1000)
   check("refresh - failed refresh keeps the last good data", grepl(paste("Total nodes:", format_number(fixture$count)), output$nodes_count))
   check("refresh - status reports the failed refresh", grepl("last refresh failed", output$data_status))
 })
@@ -1057,6 +1060,51 @@ for (setting in names(setting_tabs)) {
   shown_on <- sprintf("[%s].includes(input.tab)", paste0("'", setting_tabs[[setting]], "'", collapse = ", "))
   check(sprintf("sidebar - %s is shown only on its tabs", setting), sprintf('data-display-if="%s"', shown_on) %in% conditions)
 }
+
+# a session that opens while the first chain read is still running shows that it is reading, and
+# no observer ends the session (the Price projection's starting participation used to)
+saved_chain <- chain_cache$data; chain_cache$data <- NULL; chain_cache$last_error <- NULL; chain_cache$next_attempt <- Inf
+crashed <- tryCatch({
+  testServer(server, {
+    session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days,
+                      participation = 100, horizonDays = 90, blockSeconds = "now", extraNodes = 0, mapCountBy = "nodes", mapOnlyStaked = FALSE)
+    session$elapse(10 * 1000)
+    check("background - before the first chain read, the views say it is reading",
+          grepl("Reading data from the Gnosis chain", output_or_error(output$price_calibration)) &&
+            grepl("Reading data from the Gnosis chain", output$chain_status))
+  }); FALSE }, error = function(e) conditionMessage(e))
+check("background - no session error while the chain data is missing", isFALSE(crashed), crashed)
+chain_cache$data <- saved_chain; chain_cache$next_attempt <- -Inf
+
+### background reads (#48): a running read does not block, its result arrives later, a hung read is stopped
+bg <- new.env(); bg$data <- "old"; bg$version <- 1; bg$fetched_at <- NULL; bg$last_attempt <- current_time(); bg$last_error <- NULL
+bg$next_attempt <- -Inf
+bg$job <- list(is_alive = function() TRUE, kill = function() NULL)
+check("background - a running read leaves the data and version alone", refresh_cache(bg, "swarm", NULL, 600) == 1 && bg$data == "old")
+bg$job <- list(is_alive = function() FALSE, get_result = function() "new")
+check("background - a finished read is taken", refresh_cache(bg, "swarm", NULL, 600) == 2 && bg$data == "new" && is.null(bg$job))
+bg$next_attempt <- -Inf
+bg$job <- list(is_alive = function() FALSE, get_result = function() stop(structure(class = c("callr_error", "error", "condition"),
+  list(message = "callr subprocess failed", parent = simpleError("swarmscan answered with HTTP status 502")))))
+check("background - a failed read keeps the data and reports the child's error", refresh_cache(bg, "swarm", NULL, 600) == 2 &&
+        bg$data == "new" && bg$last_error == "swarmscan answered with HTTP status 502", bg$last_error)
+killed <- FALSE
+bg$job <- list(is_alive = function() TRUE, kill = function() killed <<- TRUE)
+bg$last_attempt <- current_time() - background_max_secs - 1
+refresh_cache(bg, "swarm", NULL, 600)
+check("background - a read running too long is stopped", killed && grepl("longer than", bg$last_error) && is.null(bg$job))
+# a real background process: the read runs in another R process and its result arrives on a later poll
+saved_read <- background_read
+background_read <- function(dir, what, previous) { Sys.sleep(1); list(what = what, dir = dir) }
+background_reads <- TRUE
+bg$next_attempt <- -Inf
+started <- Sys.time(); v <- refresh_cache(bg, "chain", NULL, 600)
+check("background - starting a read returns at once", as.numeric(difftime(Sys.time(), started, units = "secs")) < 1 && !is.null(bg$job) && v == 2)
+for (k in 1:60) { if (!bg$job$is_alive()) break; Sys.sleep(0.25) }
+check("background - the process's result arrives on the next poll", refresh_cache(bg, "chain", NULL, 600) == 3 && bg$data$what == "chain" &&
+        bg$data$dir == getwd())
+background_read <- saved_read
+background_reads <- FALSE
 
 cat(sprintf("%d checks passed, %d failed\n", passed, failed))
 quit(status = if (failed > 0) 1 else 0)
