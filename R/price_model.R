@@ -22,18 +22,26 @@ measured_block_seconds <- function(chain) {
 # rounds per day for a block time in seconds (a round is 152 blocks)
 rounds_per_day <- function(block_seconds) 86400 / (round_length_blocks * block_seconds)
 
-# expected change of log(price) in one round, for each neighbourhood size in n
-expected_round_log_change <- function(n, q, oracle) {
+# the redundancy clamp proposed in ethersphere/storage-incentives PR #322 (open, not deployed as of
+# 2026-10-08): Redistribution.claim passes min(max(count, 3), 5) to the PriceOracle instead of the
+# count, so a claimed round moves the price at most one step either way. Rounds nobody claims are
+# charged by the PriceOracle itself, which the PR does not change: they still count as changeRate[0]
+slow_clamp <- c(3, 5)
+
+# expected change of log(price) in one round, for each neighbourhood size in n. clamp: NULL for
+# today's contracts, or c(low, high) to clamp the redundancy of claimed rounds as PR #322 does
+expected_round_log_change <- function(n, q, oracle, clamp = NULL) {
   log_rate <- log(oracle$change_rate / oracle$price_base)
   vapply(n, function(k) {
     redundancy <- 0:k
-    sum(stats::dbinom(redundancy, k, q) * log_rate[pmin(redundancy, 8) + 1])
+    reported <- if (is.null(clamp)) redundancy else ifelse(redundancy == 0, 0, pmin(pmax(redundancy, clamp[1]), clamp[2]))
+    sum(stats::dbinom(redundancy, k, q) * log_rate[pmin(reported, 8) + 1])
   }, numeric(1))
 }
 
 # expected change of log(price) per day, with every neighbourhood drawn equally often
-model_drift <- function(n, q, oracle, block_seconds) {
-  rounds_per_day(block_seconds) * mean(expected_round_log_change(n, q, oracle))
+model_drift <- function(n, q, oracle, block_seconds, clamp = NULL) {
+  rounds_per_day(block_seconds) * mean(expected_round_log_change(n, q, oracle, clamp))
 }
 
 # the participation q (0 to 1) at which the model gives the observed drift; NA when no q does,

@@ -556,7 +556,8 @@ ui <-
                   actionLink("pricePlot_zoomout", "Zoom out", style = "white-space: nowrap;")),
               plotOutput("pricePlot", height = "520px",
                          brush = brushOpts("pricePlot_brush", direction = "x", resetOnNew = TRUE, fill = swarm_colours$orange, stroke = swarm_colours$orange),
-                         dblclick = "pricePlot_dblclick", hover = hoverOpts("pricePlot_pointer", delay = 80, delayType = "throttle"))),
+                         dblclick = "pricePlot_dblclick", hover = hoverOpts("pricePlot_pointer", delay = 80, delayType = "throttle")),
+              textOutput("price_clamp_note", container = p)),
 
     ###
     nav_panel("Storage growth",
@@ -1141,8 +1142,13 @@ server <- function(input, output, session) {
     settings <- price_settings()
     # while the price oracle is paused, adjustPrice changes nothing, so the price stays where it is
     drift <- if (isTRUE(chain$oracle$paused)) 0 else model_drift(price_nbhood_counts(), settings$q, chain$oracle, settings$block_seconds)
+    # the same model with the redundancy clamp of storage-incentives PR #322
+    clamped_drift <- if (isTRUE(chain$oracle$paused)) 0 else
+      model_drift(price_nbhood_counts(), settings$q, chain$oracle, settings$block_seconds, clamp = slow_clamp)
     list(chain = chain, drift = drift, observed = price_observed(), settings = settings,
-         projection = project_price(chain$price, chain$head_time, drift, settings$days, chain$oracle$minimum_price))
+         projection = project_price(chain$price, chain$head_time, drift, settings$days, chain$oracle$minimum_price),
+         clamped_drift = clamped_drift,
+         clamped = project_price(chain$price, chain$head_time, clamped_drift, settings$days, chain$oracle$minimum_price))
   })
 
   output$price_now <- renderText(format_number(price_model()$chain$price))
@@ -1234,7 +1240,8 @@ server <- function(input, output, session) {
   price_series <- reactive({
     model <- price_model()
     series <- list(history = data.frame(x = model$chain$prices$time, y = model$chain$prices$price),
-                   projection = data.frame(x = model$projection$time, y = model$projection$price))
+                   projection = data.frame(x = model$projection$time, y = model$projection$price),
+                   clamped = data.frame(x = model$clamped$time, y = model$clamped$price))
     if (isTRUE(input$extraNodes > 0)) {
       plain <- project_price(model$chain$price, model$chain$head_time,
                              if (isTRUE(model$chain$oracle$paused)) 0 else
@@ -1253,6 +1260,8 @@ server <- function(input, output, session) {
     if (!is.na(on_chain) && at <= as.numeric(price_model()$chain$head_time)) parts <- c(parts, paste("price", format_number(on_chain), "PLUR"))
     projected <- value_at(series$projection, at, max_gap = 0)
     if (!is.na(projected)) parts <- c(parts, paste("projection", format_number(round(projected)), "PLUR"))
+    clamped <- value_at(series$clamped, at, max_gap = 0)
+    if (!is.na(clamped)) parts <- c(parts, paste("with the 3-5 clamp", format_number(round(clamped)), "PLUR"))
     if (!is.null(series$plain)) {
       plain <- value_at(series$plain, at, max_gap = 0)
       if (!is.na(plain)) parts <- c(parts, paste("without the extra nodes", format_number(round(plain)), "PLUR"))
@@ -1260,11 +1269,26 @@ server <- function(input, output, session) {
     paste(parts, collapse = " | ")
   })
 
+  output$price_clamp_note <- renderText({
+    model <- price_model()
+    sprintf(paste(
+      "Green, dashed: the redundancy clamp proposed in ethersphere/storage-incentives PR #322 (open, not deployed). The",
+      "claim would pass the PriceOracle a matching-reveal count clamped to 3 to 5, so a claimed round moves the price by at most",
+      "one step: about %s a day up or %s a day down at the measured block time (doubling or halving in about %s days).",
+      "Rounds nobody claims are charged by the PriceOracle, which the PR does not change, so they still count as the",
+      "largest rise. With the clamp the model's change is %s a day, against %s without it."),
+      sprintf("%+.2f%%", drift_percent(rounds_per_day(model$settings$block_seconds) * log(model$chain$oracle$change_rate[4] / model$chain$oracle$price_base))),
+      sprintf("%+.2f%%", drift_percent(rounds_per_day(model$settings$block_seconds) * log(model$chain$oracle$change_rate[6] / model$chain$oracle$price_base))),
+      format_number(round(log(2) / (rounds_per_day(model$settings$block_seconds) * log(model$chain$oracle$change_rate[4] / model$chain$oracle$price_base)))),
+      sprintf("%+.2f%%", drift_percent(model$clamped_drift)), sprintf("%+.2f%%", drift_percent(model$drift)))
+  })
+
   output$pricePlot <- renderPlot({
     model <- price_model()
     history <- model$chain$prices
     plot <- ggplot() +
       geom_step(data = history, aes(x = time, y = price), colour = swarm_colours$text, linewidth = 1) +
+      geom_line(data = model$clamped, aes(x = time, y = price), colour = swarm_colours$mint, linetype = "dashed", linewidth = 1.1) +
       geom_line(data = model$projection, aes(x = time, y = price), colour = swarm_colours$orange, linetype = "dashed", linewidth = 1.2) +
       geom_vline(xintercept = model$chain$head_time, colour = swarm_colours$muted, linetype = "dotted")
     plain <- price_series()$plain
@@ -1275,7 +1299,7 @@ server <- function(input, output, session) {
     plot + scale_y_continuous(labels = function(x) format_number(x)) +
       swarm_plot_theme +
       labs(x = NULL, y = "PLUR per chunk per block",
-           caption = paste("White: price updates on chain. Orange, dashed: projection.",
+           caption = paste("White: price updates on chain. Orange, dashed: projection. Green, dashed: the same projection with the 3-5 clamp of PR #322.",
                            if (isTRUE(input$extraNodes > 0)) "Grey, dashed: projection without the extra nodes." else "")) +
       swarm_readable_text +
       zoom_coord(zoom_limits(price_zoom(), price_series()), "datetime")
