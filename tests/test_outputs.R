@@ -88,7 +88,7 @@ expected_max_radius <- function(bits, minimum) {
 }
 
 all_outputs <- c("leafletMap", "map_note", "map_selected", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
-                 "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
+                 "price_now", "price_model_change", "price_clamp_note", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
                  "price_balance", "price_balance_note", "price_balance_text",
                  "light_verdict", "light_capable", "light_capable_note", "light_places", "light_places_note", "light_transport_note",
                  "light_input_warning", "light_most", "light_most_note", "light_load", "light_load_note", "light_list_note",
@@ -544,6 +544,16 @@ check("price - 4 nodes everywhere: no change", abs(daily(4)) < 1e-12)
 check("price - 3 nodes everywhere: about +2.3% a day", abs(daily(3) - 2.3) < 0.05, sprintf("%.3f", daily(3)))
 check("price - no nodes: about +9.5% a day", abs(daily(0) - 9.5) < 0.1, sprintf("%.3f", daily(0)))
 check("price - 8 nodes everywhere: about -8.7% a day", abs(daily(8) + 8.7) < 0.1, sprintf("%.3f", daily(8)))
+# the 3-5 clamp of storage-incentives PR #322, by hand with everyone revealing (q = 1): 2 matching reveals
+# report 3, 8 report 5, 4 stay 4; a neighbourhood where nobody reveals (q = 0) is unclaimed and keeps changeRate[0]
+step <- function(i) log(oracle$change_rate[i + 1] / oracle$price_base)
+check("price - the clamp reports 3 to 5 for claimed rounds",
+      isTRUE(all.equal(expected_round_log_change(c(2, 8, 4), 1, oracle, slow_clamp), c(step(3), step(5), step(4)))) &&
+        isTRUE(all.equal(expected_round_log_change(c(2, 8), 1, oracle), c(step(2), step(8)))))
+check("price - with the clamp an unclaimed round still counts as the largest rise",
+      isTRUE(all.equal(expected_round_log_change(4, 0, oracle, slow_clamp), step(0))))
+check("price - the clamp's fastest rise doubles the price in about 30 days at 5-second blocks",
+      abs(log(2) / (rounds_per_day(5) * step(3)) - 30.4) < 0.5)
 check("price - 2-second blocks give 2.5 times the daily change", isTRUE(all.equal(model_drift(rep(3, 8), 1, oracle, 2), 2.5 * model_drift(rep(3, 8), 1, oracle, 5))))
 # fitting the participation finds the q that produced a drift
 counts <- c(rep(2, 50), rep(3, 200), rep(4, 200), rep(6, 62))
@@ -618,6 +628,10 @@ testServer(server, {
   check("price tab - the calibration gives the measured block time", grepl(sprintf("Blocks took %.2f seconds", measured), output$price_calibration, fixed = TRUE))
   full_change <- output$price_model_change
   session$setInputs(participation = 50)
+  check("price tab - the clamp note gives both daily changes", grepl("PR #322", output$price_clamp_note) &&
+          grepl(sprintf("With the clamp the model's change is %+.2f%% a day", drift_percent(model_drift(n, input$participation / 100, oracle, measured, slow_clamp))), output$price_clamp_note, fixed = TRUE),
+        output$price_clamp_note)
+  check("price tab - the clamped projection is a series", nrow(price_series()$clamped) > 1)
   check("price tab - lower participation raises the change", as.numeric(sub("%", "", output$price_model_change)) > as.numeric(sub("%", "", full_change)))
   session$setInputs(participation = 100, extraNodes = 3)
   check("price tab - extra nodes lower the change", as.numeric(sub("%", "", output$price_model_change)) <= as.numeric(sub("%", "", full_change)))
