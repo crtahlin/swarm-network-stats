@@ -1,0 +1,9 @@
+.git
+.Rhistory
+.Rproj.user
+docs
+scripts
+tests
+.RData
+.Ruserdata
+.env

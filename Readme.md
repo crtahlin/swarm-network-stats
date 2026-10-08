@@ -17,7 +17,7 @@ The app is meant to be informative in nature, no guarantees are made about corre
 
 # Instructions
 
-## Building docker image localy
+## Building the docker image locally
 ```
 git clone https://github.com/crtahlin/swarm-network-stats.git
 cd swarm-network-stats
@@ -25,19 +25,21 @@ docker build -t network-stats-shiny .
 docker run --rm -p 3838:3838 network-stats-shiny:latest
 ```
 
-Open in browser: `localhost:3838/`
+Open in browser: `localhost:3838/`. The first data arrives within about a minute; until then the sidebar says it is reading.
 
+The image is based on `rocker/r-ver:4.5.2`, which is published for amd64 and arm64 and installs R packages from a dated Posit Package Manager snapshot (2026-03-10), so the build works natively on ARM Macs and two builds of one commit get the same package versions. SwarmR is pinned to a commit. The app runs with `shiny::runApp`, as shiny-server would run it.
 
-## Runing image from dockerhub (might not be latest code)
+To use another Gnosis RPC endpoint, pass it to the container:
+```
+docker run --rm -p 3838:3838 -e SWARM_RPC_URL=https://your.endpoint network-stats-shiny:latest
+```
+
+## Running the image from dockerhub (might not be latest code)
 ```
 docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:latest
 ```
 
 Open in browser: `localhost:3838/`
-
-## Troubleshooting
-
-The image is built for AMD/Intel architectures, so if you have an ARM Mac, go to the settings in your Docker Desktop and set to use Rosetta emulation. Otherwise it does not seem to work. Probably does not work on other ARM systems.
 
 # Tests
 
@@ -59,29 +61,13 @@ Fork, improve, do a PR. No promises about response times. Thank you.
 
 # Instructions to push to dockerhub (to self)
 
+Build for both architectures and push in one step (needs `docker login -u crtahlin` first):
+
 ```
-# Build
-docker build -t network-stats-shiny .
+docker buildx build --platform linux/amd64,linux/arm64 \
+  -t crtahlin/swarm-network-stats:0.41 -t crtahlin/swarm-network-stats:latest --push .
 
 # Test
-docker run --rm -p 3838:3838 network-stats-shiny:latest
+docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:0.41
 localhost:3838/
-
-# Tag
-# docker tag local-image:tagname new-repo:tagname
-docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:0.36
-docker tag network-stats-shiny:latest crtahlin/swarm-network-stats:latest
-
-# Push
-docker login -u crtahlin
-docker push crtahlin/swarm-network-stats:0.36
-# and / or just latest
-docker push crtahlin/swarm-network-stats:latest
-
-# Test
-docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:0.36
-localhost:3838/
-docker run --rm -p 3838:3838 crtahlin/swarm-network-stats:latest
-localhost:3838/
-``` 
-
+```
