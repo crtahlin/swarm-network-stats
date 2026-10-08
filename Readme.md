@@ -27,7 +27,7 @@ docker run --rm -p 3838:3838 network-stats-shiny:latest
 
 Open in browser: `localhost:3838/`. The first data arrives within about a minute; until then the sidebar says it is reading.
 
-The image is based on `rocker/r-ver:4.5.2`, which is published for amd64 and arm64 and installs R packages from a dated Posit Package Manager snapshot (2026-03-10), so the build works natively on ARM Macs and two builds of one commit get the same package versions. SwarmR is pinned to a commit. The app runs with `shiny::runApp` in the container's only R process.
+The image is based on `rocker/r-ver:4.5.2`, which is published for amd64 and arm64 and installs R packages from a dated Posit Package Manager snapshot (2026-03-10), so the build works natively on ARM Macs and two builds of one commit get the same package versions. SwarmR is pinned to a commit. The app runs with `shiny::runApp`, as shiny-server would run it.
 
 To use another Gnosis RPC endpoint, pass it to the container:
 ```

@@ -4,3 +4,6 @@
 docs
 scripts
 tests
+.RData
+.Ruserdata
+.env
