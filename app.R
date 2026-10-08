@@ -350,6 +350,7 @@ swarm_theme <- bs_theme(
 )
 swarm_css <- paste0("
   :root { --mono: 'JetBrains Mono', ui-monospace, monospace; }
+  .leaflet-tooltip.marker-count { color: ", swarm_colours$bg, "; font-family: var(--mono); font-weight: 700; font-size: 11px; }
   .navbar { border-bottom: 1px solid ", swarm_colours$line, "; }
   .navbar-brand { font-family: var(--mono); letter-spacing: 0.04em; }
   .navbar-brand .hex { color: ", swarm_colours$orange, "; margin-right: 0.4em; }
@@ -891,9 +892,12 @@ server <- function(input, output, session) {
                attribution = "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ", options = tileOptions(maxZoom = 16))
     m <- map_markers_reactive()
     count <- m[[if (isTRUE(input$mapCountBy %in% map_count_choices)) input$mapCountBy else "nodes"]]
-    # each marker carries its count (options.count) for the cluster label; its size grows with it
+    # each marker carries its count (options.count) for the cluster label, and shows it in its
+    # circle as a permanent label; the circle grows with the count and fits the number
     if (nrow(m) > 0) plot <- plot %>%
-      addCircleMarkers(lat = m$lat, lng = m$lng, radius = pmin(4 + 2 * sqrt(count), 24), layerId = m$key,
+      addCircleMarkers(lat = m$lat, lng = m$lng, radius = pmin(10 + 2 * sqrt(count), 26), layerId = m$key,
+                       label = format_number(count),
+                       labelOptions = labelOptions(noHide = TRUE, direction = "center", textOnly = TRUE, className = "marker-count"),
                        options = c(pathOptions(), list(count = count)),
                        clusterOptions = markerClusterOptions(iconCreateFunction = map_cluster_icon),
                        stroke = FALSE, fillColor = swarm_colours$orange, fillOpacity = 0.9)
