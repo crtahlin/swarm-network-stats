@@ -107,6 +107,10 @@ map_cluster_icon <- htmlwidgets::JS("function(cluster) {
   var n = 0;
   cluster.getAllChildMarkers().forEach(function(m) { n += m.options.count || 0; });
   var size = n < 10 ? 'small' : n < 100 ? 'medium' : 'large';
-  return new L.DivIcon({ html: '<div><span>' + n.toLocaleString('en-US') + '</span></div>',
-                         className: 'marker-cluster marker-cluster-' + size, iconSize: new L.Point(40, 40) });
+  var text = n.toLocaleString('en-US');
+  // the circle grows with the number, so 1,234 still fits inside
+  var d = text.length <= 3 ? 30 : text.length <= 5 ? 42 : 50;
+  var style = 'width:' + d + 'px;height:' + d + 'px;line-height:' + d + 'px;border-radius:' + d / 2 + 'px';
+  return new L.DivIcon({ html: '<div style=' + style + '><span>' + text + '</span></div>',
+                         className: 'marker-cluster marker-cluster-' + size, iconSize: new L.Point(d + 10, d + 10) });
 }")

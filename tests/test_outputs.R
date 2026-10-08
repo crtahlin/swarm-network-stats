@@ -1021,6 +1021,10 @@ testServer(server, {
         paste(length(unlist(options$count)), nrow(expected), paste(names(marker_args()), collapse = ",")))
   session$setInputs(mapCountBy = "machines")
   check("map tab - counting machines gives 1 per marker", all(unlist(marker_args()[[6]]$count) == 1))
+  labels <- unlist(Filter(function(call) call$method == "addCircleMarkers",
+                          jsonlite::fromJSON(output$leafletMap, simplifyVector = FALSE)$x$calls)[[1]]$args[[11]])
+  check("map tab - every marker shows its count in the circle", length(labels) == nrow(expected) && all(labels == "1"),
+        paste(head(labels), collapse = ","))
   check("map tab - before a click the table asks for one", grepl("Click a marker", output$map_selected))
   busiest <- expected[which.max(expected$nodes), ]
   session$setInputs(leafletMap_marker_click = list(id = busiest$key))
