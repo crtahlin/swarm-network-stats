@@ -1,12 +1,11 @@
 ### the Map tab: one marker per public IP address, counted by nodes, machines or neighbourhoods covered
 # Nodes on one machine share a public IP address and so a location. Grouping them before drawing
-# gives one marker per IP; its popup lists the nodes behind it (issue #66). A node with reserve
+# gives one marker per IP; clicking it lists the nodes behind it under the map (issue #66). A node with reserve
 # doubling (height d) stores 2^d neighbourhoods, so counting 2^d per node shows where the stored
 # data sits, not only where the nodes are (issue #65)
 
 map_count_choices <- c("Nodes" = "nodes", "Machines (public IP addresses)" = "machines",
                        "Neighbourhoods covered" = "coverage")
-map_popup_lines <- 10   # nodes listed in one popup; the rest are summed up
 
 # the public IP address used to group a node: its first public IPv4 address, else its first public
 # IPv6 address, else NA
@@ -51,53 +50,55 @@ covered_nbhoods <- function(bits, height, radius) {
   paste0(substr(bits, 1, shared), if (rest > 0) nbhood_names(rest) else "")
 }
 
+# the marker each node belongs to: its public IP address, or its own overlay without one
+marker_key <- function(nodes) ifelse(is.na(nodes$public_ip), paste0("overlay:", nodes$overlay), nodes$public_ip)
+
+# the located nodes the map shows, with their heights. only_staked: keep staked nodes only
+map_nodes <- function(nodes, stakes, only_staked = FALSE) {
+  heights <- node_heights(nodes, stakes)
+  keep <- !is.na(nodes$location$latitude) & (!only_staked | heights$source == "chain")
+  list(nodes = nodes[keep, ], heights = heights[keep, ])
+}
+
 # one row per marker. nodes: the prepared nodes table (public_ip, location, overlay_binary);
 # stakes: chain_stakes() or NULL; radius: the network's radius; only_staked: keep staked nodes only.
 # Nodes without a public IP address keep one marker each and count as one machine each
 map_markers <- function(nodes, stakes, radius, only_staked = FALSE) {
-  heights <- node_heights(nodes, stakes)
-  keep <- !is.na(nodes$location$latitude) & (!only_staked | heights$source == "chain")
-  nodes <- nodes[keep, ]; heights <- heights[keep, ]
-  empty <- data.frame(lat = numeric(0), lng = numeric(0), ip = character(0), nodes = numeric(0), machines = numeric(0),
-                      coverage = numeric(0), distinct = numeric(0), popup = character(0))
+  shown <- map_nodes(nodes, stakes, only_staked)
+  nodes <- shown$nodes; heights <- shown$heights
+  empty <- data.frame(key = character(0), lat = numeric(0), lng = numeric(0), ip = character(0), place = character(0),
+                      nodes = numeric(0), machines = numeric(0), coverage = numeric(0), distinct = numeric(0))
   if (nrow(nodes) == 0) return(empty)
-  key <- ifelse(is.na(nodes$public_ip), paste0("overlay:", nodes$overlay), nodes$public_ip)
+  key <- marker_key(nodes)
   rows <- split(seq_len(nrow(nodes)), factor(key, levels = unique(key)))
   bits <- nodes$overlay_binary
-  markers <- lapply(rows, function(i) {
-    covered <- unique(unlist(lapply(i, function(k) covered_nbhoods(bits[k], heights$height[k], radius))))
-    list(lat = nodes$location$latitude[i[1]], lng = nodes$location$longitude[i[1]], ip = nodes$public_ip[i[1]],
-         nodes = length(i), machines = 1, coverage = sum(2^heights$height[i]), distinct = length(covered),
-         popup = marker_popup(nodes[i, ], heights[i, ], radius, length(covered)))
-  })
-  out <- do.call(rbind, lapply(markers, as.data.frame, stringsAsFactors = FALSE))
+  out <- do.call(rbind, lapply(names(rows), function(k) {
+    i <- rows[[k]]
+    covered <- unique(unlist(lapply(i, function(n) covered_nbhoods(bits[n], heights$height[n], radius))))
+    data.frame(key = k, lat = nodes$location$latitude[i[1]], lng = nodes$location$longitude[i[1]], ip = nodes$public_ip[i[1]],
+               place = paste(stats::na.omit(c(nodes$location$city[i[1]], nodes$location$country[i[1]])), collapse = ", "),
+               # a height above the radius covers every neighbourhood once: capped, so one bogus
+               # self-reported height cannot inflate the counts
+               nodes = length(i), machines = 1, coverage = sum(2^pmin(heights$height[i], radius)), distinct = length(covered),
+               stringsAsFactors = FALSE)
+  }))
   rownames(out) <- NULL
   out
 }
 
-# the popup of one marker: the masked IP address, the counts, then one line per node. All text from
-# swarmscan is escaped, because the dump is third-party input
-marker_popup <- function(nodes, heights, radius, distinct) {
-  esc <- htmltools::htmlEscape
-  ip <- nodes$public_ip[1]
-  place <- paste(stats::na.omit(c(nodes$location$city[1], nodes$location$country[1])), collapse = ", ")
-  yes_no <- function(x) ifelse(is.na(x), "unknown", ifelse(x, "yes", "no"))
+# the nodes behind one marker, as the table under the map shows them
+marker_nodes_table <- function(nodes, stakes, radius, key, only_staked = FALSE) {
+  shown <- map_nodes(nodes, stakes, only_staked)
+  mine <- marker_key(shown$nodes) == key
+  nodes <- shown$nodes[mine, ]; heights <- shown$heights[mine, ]
   # a field the dump leaves out reads as NA
   field <- function(name) if (is.null(nodes[[name]])) rep(NA, nrow(nodes)) else nodes[[name]]
-  agent <- field("userAgent"); full <- field("fullNode"); unreachable <- field("unreachable")
-  lines <- vapply(seq_len(min(nrow(nodes), map_popup_lines)), function(k) {
-    stake <- if (heights$source[k] == "chain") sprintf("staked %s xBZZ, height %d", format_number(round(heights$stake[k], 1)), heights$height[k]) else
-      if (heights$source[k] == "self-reported") sprintf("not staked, height %d (self-reported)", heights$height[k]) else "not staked"
-    sprintf("<code>%s</code> %s; full node: %s; reached: %s; %s; nbhood %s; location: %s",
-            esc(substr(nodes$overlay[k], 1, 8)), esc(ifelse(is.na(agent[k]), "no user agent", agent[k])),
-            yes_no(full[k]), yes_no(!(unreachable[k] %in% TRUE)), stake,
-            substr(nodes$overlay_binary[k], 1, radius), esc(nodes$location_source[k]))
-  }, "")
-  more <- if (nrow(nodes) > map_popup_lines) sprintf("<br>and %d more", nrow(nodes) - map_popup_lines) else ""
-  paste0("<b>", if (is.na(ip)) "No public IP address" else esc(mask_ip(ip)), "</b>", if (nzchar(place)) paste0(" (", esc(place), ")") else "",
-         sprintf("<br>%d nodes; %s neighbourhood coverages, %s distinct neighbourhoods at radius %d", nrow(nodes),
-                 format_number(sum(2^heights$height)), format_number(distinct), radius),
-         "<br>", paste(lines, collapse = "<br>"), more)
+  yes_no <- function(x) ifelse(is.na(x), "unknown", ifelse(x, "yes", "no"))
+  data.frame(overlay = nodes$overlay, user_agent = field("userAgent"), full_node = yes_no(field("fullNode")),
+             # swarmscan sets unreachable only on nodes it could not reach, so NA means reached
+             reached = yes_no(!(field("unreachable") %in% TRUE)), stake = round(heights$stake, 2),
+             height = heights$height, height_from = heights$source, nbhood = substr(nodes$overlay_binary, 1, radius),
+             location_source = field("location_source"), stringsAsFactors = FALSE)
 }
 
 # the cluster icon: the sum of the chosen count over the markers in the cluster (each marker carries

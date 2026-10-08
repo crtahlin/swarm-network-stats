@@ -21,7 +21,7 @@ fixture <- jsonlite::fromJSON("tests/fixtures/swarmscan-sample.json", simplifyVe
 capture_dir <- tempfile("captures"); dir.create(capture_dir)
 src <- readLines("app.R")
 src <- src[!grepl("^shinyApp\\(", src)]
-for (table_output in c("stats_table", "nodes_data", "reachability_status", "stakes_table", "nbhood_nodes")) {
+for (table_output in c("stats_table", "nodes_data", "reachability_status", "stakes_table", "nbhood_nodes", "map_nodes")) {
   src <- sub(paste0("output\\$", table_output, " <- DT::renderDataTable\\("),
              paste0("output$", table_output, " <- capture_table('", table_output, "', "), src)
 }
@@ -85,7 +85,7 @@ expected_max_radius <- function(bits, minimum) {
   radius
 }
 
-all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
+all_outputs <- c("leafletMap", "map_note", "map_selected", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
                  "price_balance", "price_balance_note", "price_balance_text",
                  "light_verdict", "light_capable", "light_capable_note", "light_places", "light_places_note", "light_transport_note",
@@ -1004,13 +1004,13 @@ check("map markers - one marker per public IP address, one per node without one"
 check("map markers - coverage sums 2^height", sum(mk$coverage) == sum(2^h$height[located]) && all(mk$distinct <= mk$coverage))
 staked_only <- map_markers(prepared_map, stakes_map, 9, only_staked = TRUE)
 check("map markers - only staked nodes", sum(staked_only$nodes) == sum(located & h$source == "chain") && nrow(staked_only) > 0)
-evil <- prepared_map[located, ][1, ]
-evil$userAgent <- "<script>alert(1)</script>"
-check("map markers - text from swarmscan is escaped in the popup",
-      !grepl("<script>", map_markers(evil, NULL, 9)$popup, fixed = TRUE) && grepl("&lt;script&gt;", map_markers(evil, NULL, 9)$popup, fixed = TRUE))
+deep <- prepared_map[located, ][1, ]; deep$statusSnapshot$committedDepth <- 60; deep$statusSnapshot$storageRadius <- 1
+check("map markers - a height above the radius covers each neighbourhood once", map_markers(deep, NULL, 9)$coverage == 2^9 &&
+        map_markers(deep, NULL, 9)$distinct == 2^9)
 crowd <- prepared_map[located, ][1:12, ]; crowd$public_ip <- "198.51.100.7"
-check("map markers - a busy IP lists 10 nodes, then the rest", grepl("and 2 more", map_markers(crowd, NULL, 9)$popup, fixed = TRUE) &&
-        grepl("198.51.100.x", map_markers(crowd, NULL, 9)$popup, fixed = TRUE) && !grepl("198.51.100.7", map_markers(crowd, NULL, 9)$popup, fixed = TRUE))
+crowd_table <- marker_nodes_table(crowd, NULL, 9, "198.51.100.7")
+check("map markers - the table lists every node behind a marker", nrow(crowd_table) == 12 && all(crowd_table$overlay == crowd$overlay) &&
+        all(nchar(crowd_table$nbhood) == 9))
 testServer(server, {
   session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days, mapCountBy = "coverage", mapOnlyStaked = FALSE)
   marker_args <- function() Filter(function(call) call$method == "addCircleMarkers",
@@ -1021,6 +1021,14 @@ testServer(server, {
         paste(length(unlist(options$count)), nrow(expected), paste(names(marker_args()), collapse = ",")))
   session$setInputs(mapCountBy = "machines")
   check("map tab - counting machines gives 1 per marker", all(unlist(marker_args()[[6]]$count) == 1))
+  check("map tab - before a click the table asks for one", grepl("Click a marker", output$map_selected))
+  busiest <- expected[which.max(expected$nodes), ]
+  session$setInputs(leafletMap_marker_click = list(id = busiest$key))
+  check("map tab - a click names the masked address and the counts", grepl(sprintf("%s nodes, %s neighbourhood coverages", format_number(busiest$nodes), format_number(busiest$coverage)),
+        output$map_selected, fixed = TRUE) && (is.na(busiest$ip) || (grepl(mask_ip(busiest$ip), output$map_selected, fixed = TRUE) && !grepl(busiest$ip, output$map_selected, fixed = TRUE))),
+        output$map_selected)
+  output$map_nodes
+  check("map tab - a click lists the nodes behind the marker", nrow(captured("map_nodes")) == busiest$nodes)
   check("map tab - the note counts markers, nodes and IP addresses", grepl(sprintf("%s markers for %s nodes", format_number(nrow(expected)), format_number(sum(expected$nodes))), output$map_note, fixed = TRUE),
         output$map_note)
 })
