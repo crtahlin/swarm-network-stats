@@ -1103,6 +1103,13 @@ check("background - starting a read returns at once", as.numeric(difftime(Sys.ti
 for (k in 1:60) { if (!bg$job$is_alive()) break; Sys.sleep(0.25) }
 check("background - the process's result arrives on the next poll", refresh_cache(bg, "chain", NULL, 600) == 3 && bg$data$what == "chain" &&
         bg$data$dir == getwd())
+# a process that cannot be started falls back to reading here
+saved_bg <- callr::r_bg
+assignInNamespace("r_bg", function(...) stop("cannot start a process"), "callr")
+bg$next_attempt <- -Inf
+check("background - when no process can be started, the read runs here", refresh_cache(bg, "chain", function(previous) "here", 600) == 4 &&
+        bg$data == "here" && is.null(bg$job))
+assignInNamespace("r_bg", saved_bg, "callr")
 background_read <- saved_read
 background_reads <- FALSE
 

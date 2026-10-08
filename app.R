@@ -718,7 +718,7 @@ server <- function(input, output, session) {
   swarm_data_polled <- reactivePoll(5 * 1000, session,
                                     checkFunc = function() {
                                       version <- refresh_swarm_cache()
-                                      if (is.null(swarm_cache$data)) paste(version, format(swarm_cache$last_attempt)) else version
+                                      if (is.null(swarm_cache$data)) paste(version, format(swarm_cache$last_attempt), swarm_cache$last_error) else version
                                     },
                                     valueFunc = function() swarm_cache$data)
 
@@ -751,7 +751,7 @@ server <- function(input, output, session) {
   chain_data_polled <- reactivePoll(5 * 1000, session,
                                     checkFunc = function() {
                                       version <- refresh_chain_cache()
-                                      if (is.null(chain_cache$data)) paste(version, format(chain_cache$last_attempt)) else version
+                                      if (is.null(chain_cache$data)) paste(version, format(chain_cache$last_attempt), chain_cache$last_error) else version
                                     },
                                     valueFunc = function() chain_cache$data)
 

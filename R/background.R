@@ -51,12 +51,12 @@ refresh_cache <- function(cache, what, compute, refresh_secs) {
     }
   } else if (as.numeric(now) >= as.numeric(cache$next_attempt)) {
     cache$last_attempt <- now
-    if (background_reads) {
-      cache$job <- callr::r_bg(background_read, args = list(dir = getwd(), what = what, previous = cache$data),
-                               supervise = TRUE, stdout = NULL, stderr = NULL)
-    } else {
-      finish(tryCatch(compute(cache$data), error = function(e) e))
-    }
+    # without callr, or when the process cannot be started, the read runs here as before
+    job <- if (background_reads && requireNamespace("callr", quietly = TRUE)) tryCatch(
+      callr::r_bg(background_read, args = list(dir = getwd(), what = what, previous = cache$data),
+                  supervise = TRUE, stdout = NULL, stderr = NULL),
+      error = function(e) NULL)
+    if (!is.null(job)) cache$job <- job else finish(tryCatch(compute(cache$data), error = function(e) e))
   }
   cache$version
 }
