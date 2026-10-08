@@ -1439,7 +1439,7 @@ server <- function(input, output, session) {
   })
   output$light_capable <- renderText(format_number(light_network()$capable))
   output$light_capable_note <- renderText(paste0("Full nodes with a /tls/.../ws underlay",
-    if (is.null(wss_probe_latest)) "" else sprintf("; %.1f%% accepted a browser's connection when probed on %s",
+    if (is.null(wss_probe_latest)) "" else sprintf("; %.1f%% accepted a browser-style WebSocket connection when probed on %s",
                                                    100 * wss_probe_latest$accepted / wss_probe_latest$probed, substr(wss_probe_latest$date, 1, 10))))
   output$light_places <- renderText(format_number(light_network()$capable * max(input$otherLimit, 0, na.rm = TRUE)))
   output$light_places_note <- renderText(sprintf("%s × %s light peers", format_number(light_network()$capable),

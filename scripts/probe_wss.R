@@ -38,7 +38,10 @@ probe <- function(url) {
   data.frame(url = url, exit_status = status, http_code = as.integer(fields[1]), ssl_verify = as.integer(fields[2]),
              tls_secs = as.numeric(fields[3]))
 }
-results <- do.call(rbind, parallel::mclapply(targets, probe, mc.cores = parallel_probes))
+results <- parallel::mclapply(targets, probe, mc.cores = parallel_probes)
+# a probe whose worker failed counts as no connection
+results <- do.call(rbind, lapply(seq_along(results), function(k) if (is.data.frame(results[[k]])) results[[k]] else
+  data.frame(url = targets[k], exit_status = NA, http_code = 0L, ssl_verify = NA_integer_, tls_secs = NA_real_)))
 results$outcome <- classify_probe(results$exit_status, results$http_code, results$ssl_verify)
 print(table(results$outcome))
 
@@ -48,7 +51,10 @@ row <- data.frame(date = format(Sys.time(), "%Y-%m-%d %H:%M", tz = "UTC"), full_
 for (o in wss_probe_outcomes) row[[o]] <- as.integer(counts[[o]])
 row$median_tls_secs <- round(stats::median(results$tls_secs[results$outcome == "accepted"]), 3)
 dir.create(dirname(wss_probe_file), showWarnings = FALSE)
-utils::write.table(row, wss_probe_file, sep = ",", row.names = FALSE, append = file.exists(wss_probe_file),
-                   col.names = !file.exists(wss_probe_file))
-cat(sprintf("%d of %d probed WSS full nodes accepted a browser connection (%.1f%%); saved to %s\n",
+# appended by column name, so a file written with other columns still lines up
+old <- if (file.exists(wss_probe_file)) utils::read.csv(wss_probe_file, check.names = FALSE, stringsAsFactors = FALSE) else NULL
+if (!is.null(old)) for (col in setdiff(names(row), names(old))) old[[col]] <- NA
+if (!is.null(old)) for (col in setdiff(names(old), names(row))) row[[col]] <- NA
+utils::write.csv(rbind(old, row[names(if (is.null(old)) row else old)]), wss_probe_file, row.names = FALSE)
+cat(sprintf("%d of %d probed WSS full nodes accepted a browser-style WebSocket connection (%.1f%%); saved to %s\n",
             row$accepted, row$probed, 100 * row$accepted / row$probed, wss_probe_file))

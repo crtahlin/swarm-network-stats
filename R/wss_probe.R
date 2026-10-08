@@ -13,14 +13,17 @@ wss_url <- function(address) {
   vapply(m, function(x) if (length(x) == 0) NA_character_ else paste0("wss://", x[5], ":", x[4], "/"), "")
 }
 
-# the WSS address a browser would try for one node: its first one on a public IPv4 address (or a
-# DNS name), as a wss:// URL; NA if it has none
+# the WSS address to probe for one node, as a wss:// URL: its first one on a public IPv4 address,
+# else on a DNS name, else on a public IPv6 address; NA if it has none. IPv4 comes first because
+# not every client (nor every probing host) has IPv6
 node_wss_url <- function(addresses) {
-  ip <- sub("^/ip4/([^/]+)/.*", "\\1", addresses)
-  public <- !grepl("^/ip4/", addresses) | is_public_ip4(ip)
-  urls <- wss_url(addresses[public])
-  urls <- urls[!is.na(urls)]
-  if (length(urls)) urls[1] else NA_character_
+  ip <- sub("^/ip[46]/([^/]+)/.*", "\\1", addresses)
+  rank <- ifelse(grepl("^/ip4/", addresses), ifelse(is_public_ip4(ip), 1, NA),
+            ifelse(grepl("^/ip6/", addresses), ifelse(is_public_ip6(ip), 3, NA), 2))
+  urls <- wss_url(addresses)
+  keep <- !is.na(urls) & !is.na(rank)
+  if (!any(keep)) return(NA_character_)
+  urls[keep][order(rank[keep])][1]
 }
 
 # the outcome of one probe from curl's exit status and its http_code and ssl_verify_result output:
@@ -48,7 +51,7 @@ wss_probe_text <- function(row) {
   if (is.null(row)) return("Whether the WSS underlays actually accept browser connections has not been measured.")
   failed <- vapply(wss_probe_outcomes[-1], function(o) row[[o]], 0)
   failed <- failed[failed > 0]
-  sprintf("Measured %s UTC: %s of %s full nodes with a public WSS underlay accepted a browser's connection (valid certificate and WebSocket upgrade; %.1f%%)%s. Whether they then had room for another light peer is not part of the check.",
+  sprintf("Measured %s UTC from one location: %s of %s full nodes with a public WSS underlay accepted a browser-style WebSocket connection (valid certificate and WebSocket upgrade; %.1f%%)%s. The libp2p handshake after the upgrade, and whether a node then had room for another light peer, are not part of the check.",
           row$date, format_number(row$accepted), format_number(row$probed), 100 * row$accepted / row$probed,
           if (length(failed)) paste0("; the rest: ", paste(sprintf("%s %s", format_number(failed), names(failed)), collapse = ", ")) else "")
 }
