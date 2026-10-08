@@ -1,0 +1,2 @@
+"date","full_nodes","wss_nodes","probed","accepted","no connection","certificate or TLS failed","no WebSocket upgrade","name does not resolve","median_tls_secs"
+"2026-10-08 06:56",4012,2486,2486,2470,1,9,0,6,0.348

@@ -261,6 +261,9 @@ source("R/light_capacity.R", local = TRUE)
 source("R/bootnodes.R", local = TRUE)
 # data reads in a background process
 source("R/background.R", local = TRUE)
+# the Connectivity tab: the measured share of WSS full nodes that accept a browser connection
+source("R/wss_probe.R", local = TRUE)
+wss_probe_latest <- read_wss_probe()
 # the Map tab: one marker per public IP address
 source("R/map_markers.R", local = TRUE)
 
@@ -1435,14 +1438,17 @@ server <- function(input, output, session) {
          other_address = sum(full & nodes$other_address %in% TRUE))
   })
   output$light_capable <- renderText(format_number(light_network()$capable))
-  output$light_capable_note <- renderText("Full nodes with a /tls/.../ws underlay")
+  output$light_capable_note <- renderText(paste0("Full nodes with a /tls/.../ws underlay",
+    if (is.null(wss_probe_latest)) "" else sprintf("; %.1f%% accepted a browser's connection when probed on %s",
+                                                   100 * wss_probe_latest$accepted / wss_probe_latest$probed, substr(wss_probe_latest$date, 1, 10))))
   output$light_places <- renderText(format_number(light_network()$capable * max(input$otherLimit, 0, na.rm = TRUE)))
   output$light_places_note <- renderText(sprintf("%s × %s light peers", format_number(light_network()$capable),
                                                  format_number(max(input$otherLimit, 0, na.rm = TRUE))))
   output$light_transport_note <- renderText({
     n <- light_network()
-    sprintf("Browsers cannot dial plain TCP, and pages served over HTTPS can only open wss connections. In swarmscan's current data, of %s full nodes, %s advertise a plain TCP underlay, %s a WSS underlay (%s both), and %s another kind. Whether the WSS underlays actually accept browser connections is not tested.",
-            format_number(n$full), format_number(n$plain_tcp), format_number(n$capable), format_number(n$both), format_number(n$other_address))
+    sprintf("Browsers cannot dial plain TCP, and pages served over HTTPS can only open wss connections. In swarmscan's current data, of %s full nodes, %s advertise a plain TCP underlay, %s a WSS underlay (%s both), and %s another kind. %s",
+            format_number(n$full), format_number(n$plain_tcp), format_number(n$capable), format_number(n$both), format_number(n$other_address),
+            wss_probe_text(wss_probe_latest))
   })
 
   # bootnode load while clients join
