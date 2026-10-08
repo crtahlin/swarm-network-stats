@@ -202,8 +202,8 @@ typical_storage_radius <- function(nodes_data) {
 }
 
 ### shared data cache
-# one copy of the data for all sessions of this R process. refresh_swarm_cache() downloads new
-# data when it is due; if a download or its preparation fails, the last good data is kept and
+# one copy of the data for all sessions of this R process. refresh_swarm_cache() starts a download
+# in a background process when it is due and takes its result when it is done; if a download or its preparation fails, the last good data is kept and
 # the download is retried (every minute with no data, every 5 minutes with older data shown).
 # version changes only when new data arrives
 swarm_cache <- new.env()
@@ -214,35 +214,23 @@ swarm_cache$last_attempt <- NULL
 swarm_cache$last_error <- NULL
 swarm_cache$next_attempt <- -Inf
 
-refresh_swarm_cache <- function() {
-  now <- current_time()
-  if (as.numeric(now) >= as.numeric(swarm_cache$next_attempt)) {
-    swarm_cache$last_attempt <- now
-    result <- tryCatch({
-      raw <- fetch_swarmscan_data()
-      # keep only what the app reads, so the raw nodes table is not held twice
-      list(counts = list(count = raw$count, unreachableCount = raw$unreachableCount),
-           nodes = prepare_nodes_data(raw))
-    }, error = function(e) e)
-    if (inherits(result, "error")) {
-      swarm_cache$last_error <- conditionMessage(result)
-      swarm_cache$next_attempt <- now + if (is.null(swarm_cache$data)) retry_interval_secs else retry_with_data_secs
-    } else {
-      swarm_cache$data <- result
-      swarm_cache$fetched_at <- now
-      swarm_cache$last_error <- NULL
-      swarm_cache$version <- swarm_cache$version + 1
-      swarm_cache$next_attempt <- now + refresh_interval_secs
-    }
-  }
-  swarm_cache$version
+swarm_cache$job <- NULL           # the background read while one runs (R/background.R)
+
+# one read of the swarmscan data: download and prepare. It runs in a background process
+compute_swarm_data <- function(previous = NULL) {
+  raw <- fetch_swarmscan_data()
+  # keep only what the app reads, so the raw nodes table is not held twice
+  list(counts = list(count = raw$count, unreachableCount = raw$unreachableCount),
+       nodes = prepare_nodes_data(raw))
 }
+
+refresh_swarm_cache <- function() refresh_cache(swarm_cache, "swarm", compute_swarm_data, refresh_interval_secs)
 
 # one line saying how fresh the data is and whether the last download failed
 data_status_text <- function() {
   stamp <- function(t) format(t, "%Y-%m-%d %H:%M UTC", tz = "UTC")
   if (is.null(swarm_cache$data)) {
-    return(paste0("No data from swarmscan yet (", swarm_cache$last_error, "). Retrying every minute."))
+    return(no_data_message(swarm_cache, "swarmscan"))
   }
   status <- paste0("Data from swarmscan, fetched ", stamp(swarm_cache$fetched_at),
                    ". Refreshed every ", refresh_interval_secs / 60, " minutes.")
@@ -271,6 +259,8 @@ source("R/time_plots.R", local = TRUE)
 source("R/light_capacity.R", local = TRUE)
 # the Connectivity tab: bootnode load while clients join
 source("R/bootnodes.R", local = TRUE)
+# data reads in a background process
+source("R/background.R", local = TRUE)
 # the Map tab: one marker per public IP address
 source("R/map_markers.R", local = TRUE)
 
@@ -721,13 +711,14 @@ server <- function(input, output, session) {
   ###############
   # PREPARE THE DATA (reactive function)
   ###############
-  # check once a minute whether new data is due; outputs recompute only when new data arrives.
+  # check every 5 seconds whether a read is due or has finished (R/background.R); this does not wait
+  # for the read itself. Outputs recompute only when new data arrives.
   # while there is no data yet, every failed attempt also counts as a change, so the
   # "no data" message below always shows the latest error
-  swarm_data_polled <- reactivePoll(60 * 1000, session,
+  swarm_data_polled <- reactivePoll(5 * 1000, session,
                                     checkFunc = function() {
                                       version <- refresh_swarm_cache()
-                                      if (is.null(swarm_cache$data)) paste(version, format(swarm_cache$last_attempt)) else version
+                                      if (is.null(swarm_cache$data)) paste(version, format(swarm_cache$last_attempt), swarm_cache$last_error) else version
                                     },
                                     valueFunc = function() swarm_cache$data)
 
@@ -735,7 +726,7 @@ server <- function(input, output, session) {
   swarm_data <- reactive({
     data <- swarm_data_polled()
     shiny::validate(shiny::need(!is.null(data),
-                                paste0("No data from swarmscan yet (", swarm_cache$last_error, "). Retrying every minute.")))
+                                no_data_message(swarm_cache, "swarmscan")))
     data
   })
 
@@ -757,12 +748,20 @@ server <- function(input, output, session) {
 
   # chain data (stake, reveals, price), polled like the swarmscan data; outputs that use it
   # read chain_data_polled() and recompute when a new read arrives
-  chain_data_polled <- reactivePoll(60 * 1000, session,
+  chain_data_polled <- reactivePoll(5 * 1000, session,
                                     checkFunc = function() {
                                       version <- refresh_chain_cache()
-                                      if (is.null(chain_cache$data)) paste(version, format(chain_cache$last_attempt)) else version
+                                      if (is.null(chain_cache$data)) paste(version, format(chain_cache$last_attempt), chain_cache$last_error) else version
                                     },
                                     valueFunc = function() chain_cache$data)
+
+  # the chain data for the views; while there is none (first read running, or failing) they show
+  # why. A validation stop is silent in observers, so it cannot end the session
+  chain_data <- reactive({
+    chain <- chain_data_polled()
+    shiny::validate(shiny::need(!is.null(chain), no_data_message(chain_cache, "the Gnosis chain")))
+    chain
+  })
 
   output$chain_status <- renderText({
     invalidateLater(60 * 1000)
@@ -973,9 +972,9 @@ server <- function(input, output, session) {
   ###############
   # every node at the set radius, listed once per neighbourhood it counts in
   nbhood_members_reactive <- reactive({
-    chain <- chain_data_polled()
+    chain <- chain_data()
     shiny::validate(shiny::need(!is.null(chain),
-                                paste0("No data from the Gnosis chain yet (", chain_cache$last_error, "). Retrying every minute.")))
+                                no_data_message(chain_cache, "the Gnosis chain")))
     shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
     shiny::validate(shiny::need(isTRUE(input$activeDays > 0 && input$activeDays <= chain_window_days),
                                 paste0("Enter an active period of at most ", chain_window_days, " days.")))
@@ -1037,7 +1036,7 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(!is.null(selected_nbhood()), ""))
     shiny::validate(shiny::need(isTRUE(input$earningsStake >= min_stake_bzz),
                                 sprintf("Enter a stake of at least %s xBZZ, the Staking contract's minimum, for the earnings estimate.", format_number(min_stake_bzz))))
-    chain <- chain_data_polled()
+    chain <- chain_data()
     paid <- pot_per_day(chain, input$activeDays)
     others <- nbhood_stake_weight(nbhood_members_reactive(), selected_nbhood())
     list(chain = chain, paid = paid, others = others,
@@ -1105,13 +1104,13 @@ server <- function(input, output, session) {
   # the change observed on chain over the sidebar's days, per day; it is measured in real time, so
   # it does not depend on the block time setting
   price_observed <- reactive({
-    chain <- chain_data_polled()
+    chain <- chain_data()
     observed_drift(chain$prices, chain$price, chain$head_time, input$activeDays)
   })
   # the participation that reproduces the observed change with the real counts (no extra nodes),
   # at the measured block time; NA if none does
   fitted_participation <- reactive({
-    fit_participation(price_active_counts(), price_observed(), chain_data_polled()$oracle, price_block_seconds_now())
+    fit_participation(price_active_counts(), price_observed(), chain_data()$oracle, price_block_seconds_now())
   })
   # the participation starts at the fitted value: set once when the data first allows a fit,
   # unless the slider was already moved from 100%
@@ -1126,7 +1125,7 @@ server <- function(input, output, session) {
 
   # today's block time, measured from the reveals read; 5 seconds, Gnosis's target, until enough are read
   price_block_seconds_now <- reactive({
-    measured <- measured_block_seconds(chain_data_polled())
+    measured <- measured_block_seconds(chain_data())
     if (is.na(measured)) 5 else measured
   })
   price_settings <- reactive({
@@ -1135,7 +1134,7 @@ server <- function(input, output, session) {
     list(q = input$participation / 100, block_seconds = if (identical(input$blockSeconds, "2")) 2 else price_block_seconds_now(), days = input$horizonDays)
   })
   price_model <- reactive({
-    chain <- chain_data_polled()
+    chain <- chain_data()
     settings <- price_settings()
     # while the price oracle is paused, adjustPrice changes nothing, so the price stays where it is
     drift <- if (isTRUE(chain$oracle$paused)) 0 else model_drift(price_nbhood_counts(), settings$q, chain$oracle, settings$block_seconds)
@@ -1158,22 +1157,22 @@ server <- function(input, output, session) {
 
   # how many active staked nodes would hold the price flat, with today's nodes (no extra nodes) at
   # the participation set
-  price_balance_plan <- reactive(balance_plan(price_active_counts(), price_settings()$q, chain_data_polled()$oracle))
+  price_balance_plan <- reactive(balance_plan(price_active_counts(), price_settings()$q, chain_data()$oracle))
   output$price_balance <- renderText({
-    if (isTRUE(chain_data_polled()$oracle$paused)) return("–")
+    if (isTRUE(chain_data()$oracle$paused)) return("–")
     plan <- price_balance_plan()
     if (is.na(plan$add)) "out of reach" else if (plan$add > 0) paste0("+", format_number(plan$add)) else
       if (plan$leave > 0) paste0("-", format_number(plan$leave)) else "0"
   })
   output$price_balance_note <- renderText({
-    if (isTRUE(chain_data_polled()$oracle$paused)) return("the price oracle is paused, so the price does not move")
+    if (isTRUE(chain_data()$oracle$paused)) return("the price oracle is paused, so the price does not move")
     plan <- price_balance_plan()
     if (is.na(plan$add)) "no number of nodes stops the rise at this participation" else
       if (plan$add > 0) "active staked nodes to add, at the participation above" else
         if (plan$leave > 0) "active staked nodes that could leave before the price stops falling" else "the price is flat already"
   })
   output$price_balance_text <- renderText({
-    if (isTRUE(chain_data_polled()$oracle$paused)) return("")
+    if (isTRUE(chain_data()$oracle$paused)) return("")
     plan <- price_balance_plan()
     settings <- price_settings()
     n <- price_active_counts()
@@ -1194,7 +1193,7 @@ server <- function(input, output, session) {
   # how well the model fits: the participation that reproduces the observed change, and what the
   # chain shows directly about the same days
   output$price_calibration <- renderText({
-    chain <- chain_data_polled()
+    chain <- chain_data()
     fitted <- fitted_participation()
     rounds <- round_stats(chain, input$activeDays, price_block_seconds_now())
     measured <- measured_block_seconds(chain)
@@ -1664,9 +1663,9 @@ server <- function(input, output, session) {
 
   # table of staked overlays from the chain, with each one's latest reveal in the window
   output$stakes_table <- DT::renderDataTable({
-    chain <- chain_data_polled()
+    chain <- chain_data()
     shiny::validate(shiny::need(!is.null(chain),
-                                paste0("No data from the Gnosis chain yet (", chain_cache$last_error, "). Retrying every minute.")))
+                                no_data_message(chain_cache, "the Gnosis chain")))
     shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
     shiny::validate(shiny::need(isTRUE(input$activeDays > 0 && input$activeDays <= chain_window_days),
                                 paste0("Enter an active period of at most ", chain_window_days, " days.")))
