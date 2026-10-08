@@ -1076,6 +1076,29 @@ crashed <- tryCatch({
 check("background - no session error while the chain data is missing", isFALSE(crashed), crashed)
 chain_cache$data <- saved_chain; chain_cache$next_attempt <- -Inf
 
+### WSS probe (#70)
+probe_address <- "/ip4/198.18.0.7/tcp/1635/tls/sni/198-18-0-7.k2k4r8example.libp2p.direct/ws/p2p/QmExample"
+check("wss probe - the URL a browser opens", identical(wss_url(c(probe_address, "/ip4/198.18.0.7/tcp/1634/p2p/QmExample")),
+                                                       c("wss://198-18-0-7.k2k4r8example.libp2p.direct:1635/", NA)))
+check("wss probe - a node's first WSS address on a public IP address",
+      identical(node_wss_url(c("/ip4/10.0.0.5/tcp/1635/tls/sni/10-0-0-5.k2k4r8example.libp2p.direct/ws", "/ip4/8.8.8.8/tcp/1635/tls/sni/8-8-8-8.k2k4r8example.libp2p.direct/ws")),
+                "wss://8-8-8-8.k2k4r8example.libp2p.direct:1635/") && is.na(node_wss_url("/ip4/10.0.0.5/tcp/1635/tls/sni/x/ws")))
+check("wss probe - public IPv4 before IPv6, private IPv6 never",
+      identical(node_wss_url(c("/ip6/2001:db8:1::5/tcp/1635/tls/sni/v6.example/ws", "/ip4/8.8.8.8/tcp/1635/tls/sni/v4.example/ws")),
+                "wss://v4.example:1635/") &&
+        identical(node_wss_url("/ip6/2a01:4f8::5/tcp/1635/tls/sni/v6.example/ws"), "wss://v6.example:1635/") &&
+        is.na(node_wss_url("/ip6/fd00::5/tcp/1635/tls/sni/v6.example/ws")))
+check("wss probe - outcomes from curl's results",
+      identical(classify_probe(c(28, 6, 60, 7, 0, 28), c(101, 0, 0, 0, 400, 0), c(0, 0, 1, 0, 0, 0)),
+                c("accepted", "name does not resolve", "certificate or TLS failed", "no connection", "no WebSocket upgrade", "no connection")))
+probe_row <- data.frame(date = "2026-10-08 07:10", full_nodes = 4012, wss_nodes = 2486, probed = 2486, accepted = 2470, "no connection" = 1,
+                        "certificate or TLS failed" = 9, "no WebSocket upgrade" = 0, "name does not resolve" = 6, median_tls_secs = 0.1, check.names = FALSE)
+check("wss probe - the tab's sentence", grepl("2,470 of 2,486 full nodes with a public WSS underlay accepted a browser-style WebSocket connection", wss_probe_text(probe_row), fixed = TRUE) &&
+        grepl("99.4%", wss_probe_text(probe_row), fixed = TRUE) && grepl("9 certificate or TLS failed, 6 name does not resolve", wss_probe_text(probe_row), fixed = TRUE) &&
+        !grepl("0 no WebSocket upgrade", wss_probe_text(probe_row), fixed = TRUE))
+check("wss probe - no measurement says so", grepl("has not been measured", wss_probe_text(NULL)))
+check("wss probe - the saved measurement reads back", !is.null(read_wss_probe()) && read_wss_probe()$probed > 0)
+
 ### background reads (#48): a running read does not block, its result arrives later, a hung read is stopped
 bg <- new.env(); bg$data <- "old"; bg$version <- 1; bg$fetched_at <- NULL; bg$last_attempt <- current_time(); bg$last_error <- NULL
 bg$next_attempt <- -Inf
