@@ -309,31 +309,16 @@ chain_cache$fetched_at <- NULL
 chain_cache$last_attempt <- NULL
 chain_cache$last_error <- NULL
 chain_cache$next_attempt <- -Inf
+chain_cache$job <- NULL
 
-refresh_chain_cache <- function() {
-  now <- current_time()
-  if (as.numeric(now) >= as.numeric(chain_cache$next_attempt)) {
-    chain_cache$last_attempt <- now
-    result <- tryCatch(fetch_chain_data(chain_cache$data), error = function(e) e)
-    if (inherits(result, "error")) {
-      chain_cache$last_error <- conditionMessage(result)
-      chain_cache$next_attempt <- now + if (is.null(chain_cache$data)) retry_interval_secs else retry_with_data_secs
-    } else {
-      chain_cache$data <- result
-      chain_cache$fetched_at <- now
-      chain_cache$last_error <- NULL
-      chain_cache$version <- chain_cache$version + 1
-      chain_cache$next_attempt <- now + chain_refresh_secs
-    }
-  }
-  chain_cache$version
-}
+# reads in a background process when due (R/background.R); the last good data is kept on failure
+refresh_chain_cache <- function() refresh_cache(chain_cache, "chain", fetch_chain_data, chain_refresh_secs)
 
 # one line saying how fresh the chain data is and whether the last read failed
 chain_status_text <- function() {
   stamp <- function(t) format(t, "%Y-%m-%d %H:%M UTC", tz = "UTC")
   if (is.null(chain_cache$data)) {
-    return(paste0("No data from the Gnosis chain yet (", chain_cache$last_error, "). Retrying every minute."))
+    return(no_data_message(chain_cache, "the Gnosis chain"))
   }
   chain <- chain_cache$data
   status <- sprintf("Chain data up to Gnosis block %s (%s): %s staked overlays, %s revealed in the last %s days.",
