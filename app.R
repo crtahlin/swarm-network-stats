@@ -154,6 +154,8 @@ prepare_nodes_data <- function(swarmscan_data) {
   underlays <- nodes_data[["underlays"]]
   if (is.null(underlays)) underlays <- vector("list", nrow(nodes_data))
   node_ips <- lapply(underlays, public_ips)
+  # the address the Map tab groups nodes by (R/map_markers.R)
+  nodes_data$public_ip <- vapply(node_ips, group_ip, "")
   located <- which(!is.na(location$latitude))
   ip_rows <- data.frame(ip = unlist(node_ips[located]), row = rep(located, lengths(node_ips[located])))
   location_key <- do.call(paste, c(location, sep = "|"))
@@ -269,6 +271,8 @@ source("R/time_plots.R", local = TRUE)
 source("R/light_capacity.R", local = TRUE)
 # the Connectivity tab: bootnode load while clients join
 source("R/bootnodes.R", local = TRUE)
+# the Map tab: one marker per public IP address
+source("R/map_markers.R", local = TRUE)
 
 
 # column names of the staked-nodes table on the Nodes info tab, each with the explanation its
@@ -293,6 +297,19 @@ header_with_tooltips <- function(columns) {
     lapply(names(columns), function(name) tags$th(title = columns[[name]], name)))))
 }
 stakes_table_header <- function() header_with_tooltips(stakes_table_columns)
+
+# columns of the node table under the Map
+map_nodes_columns <- c(
+  "Overlay" = "The node's overlay address",
+  "User agent" = "The bee version the node reports",
+  "Full node" = "Whether swarmscan lists it as a full node; unknown for nodes swarmscan did not reach",
+  "Reached by swarmscan" = "Whether swarmscan reached the node",
+  "Stake (xBZZ)" = "The amount deposited; empty for a node without stake",
+  "Height" = "Reserve doubling: the node stores 2^height neighbourhoods",
+  "Height from" = "chain: the staked height; self-reported: committed depth minus storage radius from the node's status; none: 0 assumed",
+  "Neighbourhood" = "The overlay's neighbourhood at the network's radius",
+  "Location source" = "swarmscan: located by swarmscan; same IP: taken from another node with the same public IP address"
+)
 
 # columns of the node table under the Nbhood map
 nbhood_nodes_columns <- c(
@@ -427,8 +444,23 @@ ui <-
     ###
     nav_panel("Map", 
               div(class = "section-label", "Map of nodes"),
-              textOutput("map_note"),
-              leafletOutput("leafletMap", height = "800px")),
+              p("One marker per public IP address; click a marker to list the nodes behind it under the map. Markers and cluster numbers count ",
+                "the setting below. Neighbourhoods covered counts 2^height for each node: a node with reserve doubling stores ",
+                "2^height neighbourhoods. Height comes from the chain for staked nodes, and from the node's own status ",
+                "(committed depth minus storage radius) for the others. One IP address is not always one machine: several ",
+                "machines can share one behind NAT, one machine can have several, and a data centre gateway can front many ",
+                "operators. The last part of each address is hidden. Neighbourhoods are counted at the radius the nodes report ",
+                "(their most common committed depth), not the sidebar radius."),
+              layout_column_wrap(
+                width = 1/2, fill = FALSE,
+                radioButtons("mapCountBy", "Count by", choices = map_count_choices, selected = "nodes", inline = TRUE, width = "100%"),
+                checkboxInput("mapOnlyStaked", "Only staked nodes", value = FALSE, width = "100%")
+              ),
+              textOutput("map_note", container = p),
+              leafletOutput("leafletMap", height = "800px"),
+              br(),
+              textOutput("map_selected", container = p),
+              DT::dataTableOutput("map_nodes")),
     ###
     nav_panel("Data", 
               div(class = "section-label", "Storage on the network"),
@@ -802,11 +834,52 @@ server <- function(input, output, session) {
   })
   
   # how many shown nodes have a borrowed location, and how many are left off the map
+  # the markers: the filtered nodes grouped by public IP address, at the network's radius (the radius
+  # the nodes report; the sidebar radius does not apply to this tab)
+  map_radius <- reactive({
+    radius <- typical_storage_radius(swarm_data()$nodes)
+    if (is.null(radius)) 9L else radius
+  })
+  map_markers_reactive <- reactive({
+    chain <- chain_cache$data
+    chain_data_polled()
+    map_markers(filtered_nodes_reactive(), if (is.null(chain)) NULL else chain_stakes(chain), map_radius(), isTRUE(input$mapOnlyStaked))
+  })
   output$map_note <- renderText({
     shown <- filtered_nodes_reactive()
-    sprintf("Locations of %d nodes are taken from another node with the same public IP address. %d nodes have no known location and are not shown.",
-            sum(shown$location_source %in% "same IP"), sum(is.na(shown$location$latitude)))
+    m <- map_markers_reactive()
+    paste(
+      sprintf("%s markers for %s nodes on %s public IP addresses; %s neighbourhood coverages, at radius %d.",
+              format_number(nrow(m)), format_number(sum(m$nodes)), format_number(sum(!is.na(m$ip))),
+              format_number(sum(m$coverage)), map_radius()),
+      sprintf("Locations of %d nodes are taken from another node with the same public IP address. %d nodes have no known location and are not shown.",
+              sum(shown$location_source %in% "same IP"), sum(is.na(shown$location$latitude))),
+      if (is.null(chain_cache$data)) paste("No chain data yet, so every height is self-reported",
+                                           if (isTRUE(input$mapOnlyStaked)) "and no node is known to be staked." else ".") else "")
   })
+
+  # the marker last clicked (its public IP address, or the overlay of a node without one)
+  map_selected <- reactiveVal(NULL)
+  observeEvent(input$leafletMap_marker_click, map_selected(input$leafletMap_marker_click$id))
+  map_selected_marker <- reactive({
+    m <- map_markers_reactive()
+    if (is.null(map_selected())) NULL else m[m$key == map_selected(), ]
+  })
+  output$map_selected <- renderText({
+    marker <- map_selected_marker()
+    if (is.null(marker) || nrow(marker) == 0) return("Click a marker to list the nodes behind it.")
+    sprintf("%s%s: %s nodes, %s neighbourhood coverages, %s distinct neighbourhoods at radius %d.",
+            if (is.na(marker$ip)) "A node without a public IP address" else mask_ip(marker$ip),
+            if (nzchar(marker$place)) paste0(" (", marker$place, ")") else "",
+            format_number(marker$nodes), format_number(marker$coverage), format_number(marker$distinct), map_radius())
+  })
+  output$map_nodes <- DT::renderDataTable({
+    marker <- map_selected_marker()
+    shiny::validate(shiny::need(!is.null(marker) && nrow(marker) == 1, ""))
+    chain <- chain_cache$data
+    marker_nodes_table(filtered_nodes_reactive(), if (is.null(chain)) NULL else chain_stakes(chain), map_radius(),
+                       marker$key, isTRUE(input$mapOnlyStaked))
+  }, container = header_with_tooltips(map_nodes_columns), rownames = FALSE, options = list(pageLength = 10, scrollX = TRUE))
 
   # Leaflet map plot
   output$leafletMap <- renderLeaflet({
@@ -815,10 +888,15 @@ server <- function(input, output, session) {
       leaflet() %>% 
       # Esri's dark grey base map; CARTO's dark tiles now need an API key
       addTiles(urlTemplate = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-               attribution = "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ", options = tileOptions(maxZoom = 16)) %>%
-      # addAwesomeMarkers(lat = nodes_data$location$latitude, lng = nodes_data$location$longitude) %>%
-      addCircleMarkers(clusterOptions = markerClusterOptions(), lat = filtered_nodes_reactive()$location$latitude, lng = filtered_nodes_reactive()$location$longitude,
-                       radius = 5, stroke = FALSE, fillColor = swarm_colours$orange, fillOpacity = 0.9)
+               attribution = "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ", options = tileOptions(maxZoom = 16))
+    m <- map_markers_reactive()
+    count <- m[[if (isTRUE(input$mapCountBy %in% map_count_choices)) input$mapCountBy else "nodes"]]
+    # each marker carries its count (options.count) for the cluster label; its size grows with it
+    if (nrow(m) > 0) plot <- plot %>%
+      addCircleMarkers(lat = m$lat, lng = m$lng, radius = pmin(4 + 2 * sqrt(count), 24), layerId = m$key,
+                       options = c(pathOptions(), list(count = count)),
+                       clusterOptions = markerClusterOptions(iconCreateFunction = map_cluster_icon),
+                       stroke = FALSE, fillColor = swarm_colours$orange, fillOpacity = 0.9)
     
     # return plot
     return(plot)

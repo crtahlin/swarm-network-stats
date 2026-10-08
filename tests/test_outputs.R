@@ -21,7 +21,7 @@ fixture <- jsonlite::fromJSON("tests/fixtures/swarmscan-sample.json", simplifyVe
 capture_dir <- tempfile("captures"); dir.create(capture_dir)
 src <- readLines("app.R")
 src <- src[!grepl("^shinyApp\\(", src)]
-for (table_output in c("stats_table", "nodes_data", "reachability_status", "stakes_table", "nbhood_nodes")) {
+for (table_output in c("stats_table", "nodes_data", "reachability_status", "stakes_table", "nbhood_nodes", "map_nodes")) {
   src <- sub(paste0("output\\$", table_output, " <- DT::renderDataTable\\("),
              paste0("output$", table_output, " <- capture_table('", table_output, "', "), src)
 }
@@ -85,7 +85,7 @@ expected_max_radius <- function(bits, minimum) {
   radius
 }
 
-all_outputs <- c("leafletMap", "map_note", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
+all_outputs <- c("leafletMap", "map_note", "map_selected", "data_status", "chain_status", "nbhoodMap", "nbhood_hover_text", "nbhood_selected_text",
                  "price_now", "price_model_change", "price_observed_change", "price_at_horizon", "price_gib_month", "price_calibration", "pricePlot",
                  "price_balance", "price_balance_note", "price_balance_text",
                  "light_verdict", "light_capable", "light_capable_note", "light_places", "light_places_note", "light_transport_note",
@@ -160,7 +160,8 @@ for (variant in variants) {
 
       # map: no marker at 0,0
       map_calls <- jsonlite::fromJSON(output$leafletMap, simplifyVector = FALSE)$x$calls
-      markers <- Filter(function(call) call$method == "addCircleMarkers", map_calls)[[1]]$args
+      marker_calls <- Filter(function(call) call$method == "addCircleMarkers", map_calls)
+      markers <- if (length(marker_calls)) marker_calls[[1]]$args else list(list(), list())
       lat <- unlist(lapply(markers[[1]], function(v) if (is.null(v)) NA else v))
       lng <- unlist(lapply(markers[[2]], function(v) if (is.null(v)) NA else v))
       check(paste(label, "- no map marker at 0,0"), !any(lat %in% 0 & lng %in% 0))
@@ -970,6 +971,67 @@ testServer(server, {
   check("reachability - without the unreachable flag, reached is unknown", all(captured("reachability_status")$reached == "unknown"))
 })
 swarm_cache$data <- saved_cache
+
+### Map: one marker per public IP address (#66), counting neighbourhoods covered (#65)
+check("map markers - IPv4 first, then IPv6", group_ip(c("2001:db8::1", "198.51.100.7")) == "198.51.100.7" &&
+        group_ip("2001:db8::1") == "2001:db8::1" && is.na(group_ip(character(0))))
+check("map markers - the host part of an address is hidden",
+      identical(mask_ip(c("198.51.100.7", "2001:db8:1:2:aaaa:bbbb:cccc:dddd", "2001:db8::1", NA)),
+                c("198.51.100.x", "2001:db8:1:2:x:x:x:x", "2001:db8:0:0:x:x:x:x", NA)))
+check("map markers - covered nbhoods follow reserve doubling",
+      identical(covered_nbhoods("1011", 0, 4), "1011") && identical(covered_nbhoods("1011", 2, 4), c("1000", "1001", "1010", "1011")) &&
+        length(covered_nbhoods("1011", 6, 4)) == 16)
+prepared_map <- prepare_nodes_data(fixture)
+stakes_map <- chain_stakes(fetch_chain_data())
+h <- node_heights(prepared_map, stakes_map)
+staked_rows <- match(stakes_map$overlay, prepared_map$overlay)
+check("map markers - staked nodes take their height from the chain", any(!is.na(staked_rows)) &&
+        all(h$source[staked_rows[!is.na(staked_rows)]] == "chain") &&
+        all(h$height[staked_rows[!is.na(staked_rows)]] == stakes_map$height[!is.na(staked_rows)]))
+# the fixture has no committedDepth; as bee reports it, a doubled node's storage radius is its committed depth minus its height
+doubling_map <- prepared_map
+reports <- !is.na(doubling_map$statusSnapshot$storageRadius) & doubling_map$statusSnapshot$storageRadius > 0
+doubling_map$statusSnapshot$committedDepth <- ifelse(reports, doubling_map$statusSnapshot$storageRadius + 1, 0)
+h2 <- node_heights(doubling_map, stakes_map)
+self <- h2$source == "self-reported"
+check("map markers - other nodes report committed depth minus storage radius", sum(self) == sum(reports & !(prepared_map$overlay %in% stakes_map$overlay)) &&
+        all(h2$height[self] == 1) && all(h2$source[!reports & !(prepared_map$overlay %in% stakes_map$overlay)] == "none"))
+located <- !is.na(prepared_map$location$latitude)
+mk <- map_markers(prepared_map, stakes_map, 9)
+check("map markers - one marker per public IP address, one per node without one",
+      nrow(mk) == length(unique(prepared_map$public_ip[located & !is.na(prepared_map$public_ip)])) + sum(located & is.na(prepared_map$public_ip)) &&
+        sum(mk$nodes) == sum(located) && nrow(mk) < sum(located))
+check("map markers - coverage sums 2^height", sum(mk$coverage) == sum(2^h$height[located]) && all(mk$distinct <= mk$coverage))
+staked_only <- map_markers(prepared_map, stakes_map, 9, only_staked = TRUE)
+check("map markers - only staked nodes", sum(staked_only$nodes) == sum(located & h$source == "chain") && nrow(staked_only) > 0)
+deep <- prepared_map[located, ][1, ]; deep$statusSnapshot$committedDepth <- 60; deep$statusSnapshot$storageRadius <- 1
+check("map markers - a height above the radius covers each neighbourhood once", map_markers(deep, NULL, 9)$coverage == 2^9 &&
+        map_markers(deep, NULL, 9)$distinct == 2^9)
+crowd <- prepared_map[located, ][1:12, ]; crowd$public_ip <- "198.51.100.7"
+crowd_table <- marker_nodes_table(crowd, NULL, 9, "198.51.100.7")
+check("map markers - the table lists every node behind a marker", nrow(crowd_table) == 12 && all(crowd_table$overlay == crowd$overlay) &&
+        all(nchar(crowd_table$nbhood) == 9))
+testServer(server, {
+  session$setInputs(storageRadius = 9, minNodesPerNbhood = 2, onlyFullNodes = FALSE, activeDays = chain_window_days, mapCountBy = "coverage", mapOnlyStaked = FALSE)
+  marker_args <- function() Filter(function(call) call$method == "addCircleMarkers",
+                                   jsonlite::fromJSON(output$leafletMap, simplifyVector = FALSE)$x$calls)[[1]]$args
+  options <- marker_args()[[6]]
+  expected <- map_markers(filtered_nodes_reactive(), chain_stakes(chain_cache$data), map_radius())
+  check("map tab - markers carry the chosen count for the cluster labels", isTRUE(all.equal(unlist(options$count), expected$coverage)),
+        paste(length(unlist(options$count)), nrow(expected), paste(names(marker_args()), collapse = ",")))
+  session$setInputs(mapCountBy = "machines")
+  check("map tab - counting machines gives 1 per marker", all(unlist(marker_args()[[6]]$count) == 1))
+  check("map tab - before a click the table asks for one", grepl("Click a marker", output$map_selected))
+  busiest <- expected[which.max(expected$nodes), ]
+  session$setInputs(leafletMap_marker_click = list(id = busiest$key))
+  check("map tab - a click names the masked address and the counts", grepl(sprintf("%s nodes, %s neighbourhood coverages", format_number(busiest$nodes), format_number(busiest$coverage)),
+        output$map_selected, fixed = TRUE) && (is.na(busiest$ip) || (grepl(mask_ip(busiest$ip), output$map_selected, fixed = TRUE) && !grepl(busiest$ip, output$map_selected, fixed = TRUE))),
+        output$map_selected)
+  output$map_nodes
+  check("map tab - a click lists the nodes behind the marker", nrow(captured("map_nodes")) == busiest$nodes)
+  check("map tab - the note counts markers, nodes and IP addresses", grepl(sprintf("%s markers for %s nodes", format_number(nrow(expected)), format_number(sum(expected$nodes))), output$map_note, fixed = TRUE),
+        output$map_note)
+})
 
 ### the sidebar shows each setting only on the tabs it applies to (#69)
 # tabs that hide the radius keep working with an invalid one typed on another tab
