@@ -147,3 +147,29 @@ nbhood_stake_weight <- function(members, nbhood) {
   active <- members[members$nbhood %in% nbhood & members$kind == node_kinds[["active"]], ]
   sum(active$effective_stake / 2^active$height)
 }
+
+# the earnings estimate for a tile of the map, made where the game is played: in the neighbourhoods
+# at the depth of the claimed truths (`depth`), whatever the sidebar radius. A tile at a radius at or
+# above that depth lies inside one game neighbourhood; a tile at a lower radius covers several, and
+# the estimate is their average (a new node lands in one of them, set by its overlay).
+# game_members: nbhood_members() at `depth`; stakes: chain_stakes(), to count frozen nodes
+tile_earnings <- function(pot_per_day, tile, depth, stake, game_members, stakes) {
+  r <- nchar(tile)
+  game <- if (r >= depth) substr(tile, 1, depth) else paste0(tile, nbhood_names(depth - r))
+  per_game <- lapply(game, function(nb) {
+    weight <- nbhood_stake_weight(game_members, nb)
+    active <- game_members[game_members$nbhood == nb & game_members$kind == node_kinds[["active"]], ]
+    c(expected_earnings(pot_per_day, depth, stake, weight), others = weight, active = nrow(active),
+      frozen = sum(stakes$frozen[match(active$overlay, stakes$overlay)] %in% TRUE))
+  })
+  pick <- function(name) vapply(per_game, function(x) x[[name]], 0)
+  list(game = game, depth = depth, per_30_days = mean(pick("per_30_days")), range = range(pick("per_30_days")),
+       win_share = mean(pick("win_share")), others = mean(pick("others")), active = sum(pick("active")), frozen = sum(pick("frozen")))
+}
+
+# what the whole network paid per `stake` xBZZ of effective stake per 30 days: the pot shared over the
+# effective stake of all active staked nodes, a comparison for one neighbourhood's estimate
+network_earnings <- function(pot_per_day, stake, active_effective_stake) {
+  if (active_effective_stake <= 0) return(NA_real_)
+  pot_per_day * 30 * stake / active_effective_stake
+}
