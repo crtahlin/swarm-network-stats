@@ -208,6 +208,9 @@ read_stakes <- function(owners, price, head_block) {
   # nodeEffectiveStake is 0 while frozen
   committed_bzz <- 2^stakes$height * stakes$committed_stake * price / bzz_base_units
   stakes$effective_stake_bzz <- ifelse(stakes$frozen, 0, pmin(committed_bzz, stakes$stake_bzz))
+  # what the effective stake will be once a freeze ends (Staking.freezeDeposit moves the last
+  # update forward by a number of blocks; the stake itself is kept)
+  stakes$unfrozen_stake_bzz <- pmin(committed_bzz, stakes$stake_bzz)
   stakes$minimum_stake_bzz <- min_stake_bzz * 2^stakes$height
   # Redistribution.commit: staked, not frozen, and the last update at least 2 rounds ago
   stakes$can_play <- stakes$last_updated_block < head_block - 2 * round_length_blocks

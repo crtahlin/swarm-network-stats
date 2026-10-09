@@ -152,19 +152,25 @@ nbhood_stake_weight <- function(members, nbhood) {
 # at the depth of the claimed truths (`depth`), whatever the sidebar radius. A tile at a radius at or
 # above that depth lies inside one game neighbourhood; a tile at a lower radius covers several, and
 # the estimate is their average (a new node lands in one of them, set by its overlay).
-# game_members: nbhood_members() at `depth`; stakes: chain_stakes(), to count frozen nodes
+# A frozen node cannot play now, but a freeze lasts days and the node then plays with its stake
+# again, so over 30 days it counts with that stake (unfrozen_stake_bzz).
+# game_members: nbhood_members() at `depth`; stakes: chain_stakes()
 tile_earnings <- function(pot_per_day, tile, depth, stake, game_members, stakes) {
   r <- nchar(tile)
   game <- if (r >= depth) substr(tile, 1, depth) else paste0(tile, nbhood_names(depth - r))
   per_game <- lapply(game, function(nb) {
-    weight <- nbhood_stake_weight(game_members, nb)
     active <- game_members[game_members$nbhood == nb & game_members$kind == node_kinds[["active"]], ]
-    c(expected_earnings(pot_per_day, depth, stake, weight), others = weight, active = nrow(active),
-      frozen = sum(stakes$frozen[match(active$overlay, stakes$overlay)] %in% TRUE))
+    s <- match(active$overlay, stakes$overlay)
+    frozen <- stakes$frozen[s] %in% TRUE
+    weight <- sum(ifelse(frozen, stakes$unfrozen_stake_bzz[s], active$effective_stake) / 2^active$height)
+    c(expected_earnings(pot_per_day, depth, stake, weight), others = weight, active = nrow(active), frozen = sum(frozen),
+      frozen_until = if (any(frozen)) max(stakes$last_updated_block[s][frozen]) else NA_real_)
   })
   pick <- function(name) vapply(per_game, function(x) x[[name]], 0)
+  until <- pick("frozen_until")
   list(game = game, depth = depth, per_30_days = mean(pick("per_30_days")), range = range(pick("per_30_days")),
-       win_share = mean(pick("win_share")), others = mean(pick("others")), active = sum(pick("active")), frozen = sum(pick("frozen")))
+       win_share = mean(pick("win_share")), others = mean(pick("others")), active = mean(pick("active")),
+       frozen = mean(pick("frozen")), frozen_until = if (all(is.na(until))) NA_real_ else max(until, na.rm = TRUE))
 }
 
 # what the whole network paid per `stake` xBZZ of effective stake per 30 days: the pot shared over the
