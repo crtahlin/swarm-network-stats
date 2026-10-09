@@ -481,6 +481,22 @@ check("map - expected earnings", isTRUE(all.equal(earn$win_share, 0.1)) && isTRU
 members4 <- nbhood_members(chain$stakes, latest, dump, 4)
 some <- members4$nbhood[members4$kind == node_kinds[["active"]]][1]
 active_here <- members4[members4$nbhood == some & members4$kind == node_kinds[["active"]], ]
+# a tile at a radius above the game's depth lies inside one game neighbourhood; a frozen active node there counts as 0
+fake_game <- data.frame(overlay = c("a", "b", "c"), nbhood = c("101", "101", "100"), kind = node_kinds[["active"]],
+                        effective_stake = c(0, 30, 50), height = c(0, 1, 0))
+# the frozen node "a" counts with the 40 xBZZ it gets back when its freeze ends at block 900
+fake_stakes <- data.frame(overlay = c("a", "b", "c"), frozen = c(TRUE, FALSE, FALSE), unfrozen_stake_bzz = c(40, 30, 50),
+                          last_updated_block = c(900, 100, 100))
+te <- tile_earnings(512, "10110", 3, 10, fake_game, fake_stakes)
+check("map - a deeper tile is estimated in its game neighbourhood, a frozen node with its stake after the freeze",
+      identical(te$game, "101") && te$others == 55 && te$active == 2 && te$frozen == 1 && te$frozen_until == 900 &&
+        isTRUE(all.equal(te$per_30_days, 512 * 30 / 8 * 10 / 65)))
+te2 <- tile_earnings(512, "10", 3, 10, fake_game, fake_stakes)
+check("map - a shallower tile averages its game neighbourhoods, counts per neighbourhood", identical(te2$game, c("100", "101")) &&
+        isTRUE(all.equal(te2$per_30_days, mean(c(512 * 30 / 8 * 10 / 60, 512 * 30 / 8 * 10 / 65)))) &&
+        isTRUE(all.equal(te2$range, c(512 * 30 / 8 * 10 / 65, 512 * 30 / 8 * 10 / 60))) && te2$active == 1.5 && te2$frozen == 0.5)
+check("map - network-wide earnings per stake", isTRUE(all.equal(network_earnings(1000, 10, 150000), 1000 * 30 * 10 / 150000)) &&
+        is.na(network_earnings(1000, 10, 0)))
 check("map - stake weight halves per reserve doubling", isTRUE(all.equal(nbhood_stake_weight(members4, some), sum(active_here$effective_stake / 2^active_here$height))))
 
 # hover and click: the tile under the pointer, its summary, and its nodes
@@ -498,14 +514,28 @@ testServer(server, {
   session$setInputs(earningsStake = 10)
   details <- output$nbhood_selected_details
   drawn_here <- last_drawn(chain_cache$data$anchors, chain_cache$data$truths, busiest$nbhood)
-  expected_earn <- expected_earnings(pot_per_day(chain_cache$data, 0.25), 4, 10, nbhood_stake_weight(members, busiest$nbhood))
+  # by hand: the game's depth is the claimed truths' depth (9 in the fixture), so the radius-4 tile covers
+  # 32 game neighbourhoods; the estimate is the mean over them, each against its own active stake weight
+  game9 <- nbhood_members(chain_cache$data$stakes, last_reveals(chain_cache$data, 0.25), NULL, 9)
+  st9 <- chain_cache$data$stakes
+  weight9 <- function(nb) { a <- game9[game9$nbhood == nb & game9$kind == node_kinds[["active"]], ]; s <- match(a$overlay, st9$overlay)
+    sum(ifelse(st9$frozen[s], st9$unfrozen_stake_bzz[s], a$effective_stake) / 2^a$height) }
+  per_game <- vapply(paste0(busiest$nbhood, nbhood_names(5)), function(nb)
+    expected_earnings(pot_per_day(chain_cache$data, 0.25), 9, 10, weight9(nb))$per_30_days, 0)
+  expected_earn <- list(per_30_days = mean(per_game), win_share = mean(vapply(paste0(busiest$nbhood, nbhood_names(5)), function(nb)
+    expected_earnings(1, 9, 10, weight9(nb))$win_share, 0)))
   check("map - details give the last draw", if (is.na(drawn_here$round)) grepl("Not drawn", details) else grepl(format_number(drawn_here$round), details, fixed = TRUE), details)
   history_here <- nbhood_history(chain_cache$data, busiest$nbhood, 0.25)
   check("map - details give this nbhood's own payouts", grepl(sprintf("drawn in %s rounds, and their winners were paid %s xBZZ",
           format_number(history_here$rounds), format_number(round(history_here$paid, 1))), details, fixed = TRUE), details)
   explainer <- output$nbhood_earnings_explainer
   check("map - the explanation is a separate paragraph and says the payouts are network-wide",
-        grepl("whole network's payouts", explainer, fixed = TRUE) && !grepl("whole network", details, fixed = TRUE))
+        grepl("whole network's payouts", explainer, fixed = TRUE) && !grepl("How the estimate is made", details, fixed = TRUE))
+  check("map - the estimate is made at the claimed truths' depth, averaged over the tile's game neighbourhoods",
+        grepl("in the 32 neighbourhoods at depth 9", explainer, fixed = TRUE) && grepl("on average, from", details, fixed = TRUE), explainer)
+  st0 <- chain_cache$data$stakes; active0 <- st0$overlay %in% last_reveals(chain_cache$data, 0.25)$overlay
+  check("map - details compare with the network-wide earnings per stake", grepl(sprintf("active nodes earn about %s xBZZ per 10 xBZZ",
+          format_number(round(pot_per_day(chain_cache$data, 0.25) * 30 * 10 / sum(st0$effective_stake_bzz[active0]), 2))), details, fixed = TRUE), details)
   check("map - details give the expected earnings", grepl(sprintf("about %s xBZZ per 30 days", format_number(round(expected_earn$per_30_days, 2))), details, fixed = TRUE), details)
   check("map - the explanation gives the win share", grepl(sprintf("win %.1f%% of the time", 100 * expected_earn$win_share), explainer, fixed = TRUE), explainer)
   session$setInputs(earningsStake = 5)

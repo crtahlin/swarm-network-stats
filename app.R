@@ -1042,11 +1042,20 @@ server <- function(input, output, session) {
                                 sprintf("Enter a stake of at least %s xBZZ, the Staking contract's minimum, for the earnings estimate.", format_number(min_stake_bzz))))
     chain <- chain_data()
     paid <- pot_per_day(chain, input$activeDays)
-    others <- nbhood_stake_weight(nbhood_members_reactive(), selected_nbhood())
-    list(chain = chain, paid = paid, others = others,
+    # the game draws neighbourhoods at the claimed truths' depth, which the sidebar radius may differ from
+    depth <- round_stats(chain, input$activeDays, price_block_seconds_now())$truth_depth
+    if (is.na(depth)) depth <- input$storageRadius
+    stakes <- chain_stakes(chain)
+    latest <- last_reveals(chain, input$activeDays)
+    game_members <- nbhood_members(stakes, latest, NULL, depth)
+    active_stake <- sum(stakes$effective_stake_bzz[stakes$overlay %in% latest$overlay])
+    list(chain = chain, paid = paid, depth = depth,
          drawn = last_drawn(chain$anchors, chain$truths, selected_nbhood()),
-         history = nbhood_history(chain, selected_nbhood(), input$activeDays),
-         earn = expected_earnings(paid, input$storageRadius, input$earningsStake, others))
+         # the draws of the game neighbourhood when the tile lies inside one, else of the tile
+         history_nbhood = if (input$storageRadius >= depth) substr(selected_nbhood(), 1, depth) else selected_nbhood(),
+         history = nbhood_history(chain, if (input$storageRadius >= depth) substr(selected_nbhood(), 1, depth) else selected_nbhood(), input$activeDays),
+         earn = tile_earnings(paid, selected_nbhood(), depth, input$earningsStake, game_members, stakes),
+         network = network_earnings(paid, input$earningsStake, active_stake))
   })
 
   # first paragraph: the facts and the estimate
@@ -1059,23 +1068,45 @@ server <- function(input, output, session) {
               if (d$drawn$claimed) "claimed" else "not claimed")
     }
     paste(drawn_text,
-      sprintf("Over the last %s days it was drawn in %s rounds, and their winners were paid %s xBZZ in total (the average per neighbourhood is %s xBZZ).",
-              format_number(input$activeDays), format_number(d$history$rounds), format_number(round(d$history$paid, 1)),
-              format_number(round(d$paid * input$activeDays / 2^input$storageRadius, 1))),
-      sprintf("A new node staking %s xBZZ here could expect about %s xBZZ per 30 days (%s%% of its stake a year).",
+      sprintf("Over the last %s days %s was drawn in %s rounds, and their winners were paid %s xBZZ in total (the average per neighbourhood at that depth is %s xBZZ).",
+              format_number(input$activeDays),
+              if (d$history_nbhood == selected_nbhood()) "it" else sprintf("its game neighbourhood %s", d$history_nbhood),
+              format_number(d$history$rounds), format_number(round(d$history$paid, 1)),
+              format_number(round(d$paid * input$activeDays / 2^nchar(d$history_nbhood), 1))),
+      sprintf("A new node staking %s xBZZ here could expect about %s xBZZ per 30 days%s (%s%% of its stake a year)%s.",
               format_number(input$earningsStake), format_number(round(d$earn$per_30_days, 2)),
-              format_number(round(100 * d$earn$per_30_days * 365 / 30 / input$earningsStake))))
+              if (length(d$earn$game) > 1) sprintf(" on average, from %s to %s depending on where its overlay falls",
+                                                   format_number(round(d$earn$range[1], 2)), format_number(round(d$earn$range[2], 2))) else "",
+              format_number(round(100 * d$earn$per_30_days * 365 / 30 / input$earningsStake)),
+              if (is.na(d$network)) "" else sprintf("; across the whole network, active nodes earn about %s xBZZ per %s xBZZ of effective stake per 30 days at the recent rate",
+                                                     format_number(round(d$network, 2)), format_number(input$earningsStake))))
   })
 
   # second paragraph: how the estimate is made
   output$nbhood_earnings_explainer <- renderText({
     d <- nbhood_details()
+    where <- if (length(d$earn$game) == 1) {
+      sprintf("in neighbourhood %s at depth %d, the depth of the claimed truths%s", d$earn$game, d$depth,
+              if (input$storageRadius != d$depth) sprintf(" (the map's tile at radius %d is part of it)", input$storageRadius) else "")
+    } else {
+      sprintf("in the %d neighbourhoods at depth %d, the depth of the claimed truths, that this tile at radius %d covers, and averaged over them",
+              length(d$earn$game), d$depth, input$storageRadius)
+    }
     sprintf(paste(
-      "How the estimate is made: it uses the whole network's payouts, %s xBZZ a day over the last %s days, shared over %s neighbourhoods at radius %d, each drawn equally often in the long run.",
-      "When this neighbourhood is drawn, the node would win %.1f%% of the time, against %s xBZZ of stake (weighted for reserve doubling) from the active staked nodes already here.",
+      "How the estimate is made: the game draws neighbourhoods at the depth of the claimed truths, so the estimate is made %s.",
+      "It uses the whole network's payouts, %s xBZZ a day over the last %s days, shared over %s neighbourhoods, each drawn equally often in the long run.",
+      "When the node's neighbourhood is drawn, it would win %.1f%% of the time, against %s%s xBZZ of stake (effective stake, halved for each reserve doubling) from %s%s active staked nodes%s%s.",
       "It assumes all of them reveal a matching hash, and that payouts stay as they were."),
-      format_number(round(d$paid)), format_number(input$activeDays), format_number(2^input$storageRadius), input$storageRadius,
-      100 * d$earn$win_share, format_number(round(d$others, 1)))
+      where, format_number(round(d$paid)), format_number(input$activeDays), format_number(2^d$depth),
+      100 * d$earn$win_share, if (length(d$earn$game) > 1) "on average " else "", format_number(round(d$earn$others, 1)),
+      if (length(d$earn$game) > 1) "on average " else "the ", format_number(round(d$earn$active, 1)),
+      if (length(d$earn$game) > 1) " per neighbourhood" else " there",
+      if (d$earn$frozen > 0) sprintf(". %s frozen now; a freeze lasts days, so %s with the stake %s back when it ends (the last one ends at about %s UTC)",
+                                     if (length(d$earn$game) > 1) sprintf("On average %s per neighbourhood are", format_number(round(d$earn$frozen, 1))) else
+                                       sprintf("%s of them %s", format_number(d$earn$frozen), if (d$earn$frozen == 1) "is" else "are"),
+                                     if (d$earn$frozen == 1 && length(d$earn$game) == 1) "it counts" else "they count",
+                                     if (d$earn$frozen == 1 && length(d$earn$game) == 1) "it gets" else "they get",
+                                     format(d$chain$head_time + (d$earn$frozen_until - d$chain$to_block) * price_block_seconds_now(), "%Y-%m-%d %H:%M", tz = "UTC")) else "")
   })
 
   output$nbhood_nodes <- DT::renderDataTable({
