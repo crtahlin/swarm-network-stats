@@ -15,6 +15,7 @@ chain_topics <- list(
   revealed      = "0x13fc17fd71632266fe82092de6dd91a06b4fa68d8dc950492e5421cbed55a6a5", # Revealed(uint256,bytes32,uint256,uint256,bytes32,uint8)
   truth         = "0x34e8eda4cd857cd2865becf58a47748f31415f4a382cbb2cc0c64b9a27c717be", # TruthSelected(bytes32,uint8)
   stake_updated = "0x8fb3da6e133de1007392b10d429548e9c2565c791c52e1498b01b65d8797e74c", # StakeUpdated(address,uint256,uint256,bytes32,uint256,uint8)
+  overlay_changed = "0xe188baf4bcb1c4413d19ba0eaef908614d30e8df9570d6fc4d584b75f4a37a3a", # OverlayChanged(address,bytes32)
   price_update  = "0xae46785019700e30375a5d7b4f91e32f8060ef085111f896ebf889450aa2ab5a", # PriceUpdate(uint256)
   anchor        = "0xf0ae472da9c8da86bda4991a549c03a3cb328b5f360ea11a5b8814f32bb85176", # CurrentRevealAnchor(uint256,bytes32)
   pot_withdrawn = "0xf5d8f9b1e7af440e1e7915f4693ccc004d1461a7dafd17ea7347d03decf298e1"  # PotWithdrawn(address,uint256)
@@ -189,6 +190,26 @@ stake_owners <- function(logs) {
   unique(tolower(paste0("0x", substr(logs$topic1, 27, 66))))
 }
 
+# when stake arrived at each overlay. Staking.manageStake emits OverlayChanged (data: owner, overlay)
+# whenever the overlay is new, which includes a first stake and a stake moved to another overlay (also
+# back to an older one, by reusing its nonce), so the LATEST OverlayChanged per overlay is the start.
+# StakeUpdated (owner indexed; data: committedStake, potentialStake, overlay, lastUpdatedBlockNumber,
+# height) is used only for an overlay without any OverlayChanged, earliest first.
+# previous: the table from the last read; a newer OverlayChanged replaces its row
+stake_starts <- function(logs, previous = NULL, overlay_logs = NULL) {
+  empty <- data.frame(overlay = character(0), block = numeric(0), time = as.POSIXct(character(0), tz = "UTC"))
+  part <- function(l, word) if (is.null(l) || nrow(l) == 0) empty else
+    data.frame(overlay = tolower(abi_word(l$data, word)), block = l$block, time = l$time)
+  moved <- part(overlay_logs, 2)
+  moved <- moved[order(moved$block, decreasing = TRUE), ]
+  moved <- moved[!duplicated(moved$overlay), ]
+  starts <- rbind(moved, if (is.null(previous)) empty else previous[!(previous$overlay %in% moved$overlay), ])
+  added <- part(logs, 3)
+  added <- added[order(added$block), ]
+  added <- added[!duplicated(added$overlay) & !(added$overlay %in% starts$overlay), ]
+  rbind(starts, added)
+}
+
 # Staking.stakes(owner) for every owner: overlay, committedStake, potentialStake,
 # lastUpdatedBlockNumber, height. Owners whose stake was deleted (migrated or slashed away)
 # return zeros and are dropped
@@ -234,6 +255,8 @@ read_oracle <- function() {
 # stakes are re-read in full every time, because freezes, withdrawals and height changes do not
 # all emit events
 fetch_chain_data <- function(previous = NULL) {
+  # data read by an older version of this code has no stake starts: read everything again once
+  if (!is.null(previous) && is.null(previous$stake_starts)) previous <- NULL
   head_block <- hex_to_number(rpc_call("eth_blockNumber")) - chain_confirmations
   head <- rpc_call("eth_getBlockByNumber", list(sprintf("0x%x", head_block), FALSE))
   head_time <- as.POSIXct(hex_to_number(head$timestamp), origin = "1970-01-01", tz = "UTC")
@@ -261,8 +284,10 @@ fetch_chain_data <- function(previous = NULL) {
   pots <- decode_pot(date_logs(logs_table(
     fetch_logs(chain_contracts$postage_stamp$address, chain_topics$pot_withdrawn, from, head_block))))
   owner_from <- if (is.null(previous)) chain_contracts$staking$deployed else previous$to_block + 1
-  owners <- stake_owners(logs_table(fetch_logs(chain_contracts$staking$address, chain_topics$stake_updated,
-                                               owner_from, head_block)))
+  stake_logs <- date_logs(logs_table(fetch_logs(chain_contracts$staking$address, chain_topics$stake_updated, owner_from, head_block)))
+  owners <- stake_owners(stake_logs)
+  overlay_logs <- date_logs(logs_table(fetch_logs(chain_contracts$staking$address, chain_topics$overlay_changed, owner_from, head_block)))
+  starts <- stake_starts(stake_logs, previous$stake_starts, overlay_logs)
 
   if (!is.null(previous)) {
     keep <- previous$reveals$block >= window_start
@@ -285,7 +310,15 @@ fetch_chain_data <- function(previous = NULL) {
                                                         data = chain_selectors$current_price), "latest")))
   list(to_block = head_block, head_time = head_time, window_start = window_start, window_start_time = window_start_time,
        price = price, prices = prices, reveals = reveals, truths = truths, anchors = anchors, pots = pots, owners = owners,
-       stakes = read_stakes(owners, price, head_block), oracle = read_oracle())
+       stake_starts = starts, stakes = add_stake_start(read_stakes(owners, price, head_block), starts), oracle = read_oracle())
+}
+
+# when stake arrived at each stake's overlay (stake_starts()): staked_block and staked_time (NA if not seen)
+add_stake_start <- function(stakes, starts) {
+  first <- match(stakes$overlay, starts$overlay)
+  stakes$staked_block <- starts$block[first]
+  stakes$staked_time <- starts$time[first]
+  stakes
 }
 
 ### accessors for the views
@@ -298,6 +331,14 @@ chain_stakes <- function(chain) chain$stakes
 chain_price <- function(chain) list(current = chain$price, history = chain$prices, oracle = chain$oracle)
 
 # the latest reveal of each overlay within the last `days` days
+# the overlays that count as active over the last `days` days: a reveal in that time, or first
+# staked in that time (a new stake has had little or no chance to play yet)
+active_overlays <- function(chain, days) {
+  since <- chain$head_time - days * 86400
+  new <- chain$stakes$overlay[!is.na(chain$stakes$staked_time) & chain$stakes$staked_time >= since]
+  unique(c(last_reveals(chain, days)$overlay, new))
+}
+
 last_reveals <- function(chain, days) {
   reveals <- chain$reveals[chain$reveals$time >= chain$head_time - days * 86400, ]
   reveals <- reveals[order(reveals$block, decreasing = TRUE), ]
