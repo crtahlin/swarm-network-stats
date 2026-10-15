@@ -190,18 +190,24 @@ stake_owners <- function(logs) {
   unique(tolower(paste0("0x", substr(logs$topic1, 27, 66))))
 }
 
-# when each overlay was first staked: the block and time of the first event naming it. Staking.manageStake
-# emits StakeUpdated (owner indexed; data: committedStake, potentialStake, overlay, lastUpdatedBlockNumber,
-# height) when stake is added, and OverlayChanged (data: owner, overlay) when the overlay is new, which
-# includes a first stake and a stake moved to another overlay without adding to it.
-# previous: the table from the last read, merged so the earliest stays
+# when stake arrived at each overlay. Staking.manageStake emits OverlayChanged (data: owner, overlay)
+# whenever the overlay is new, which includes a first stake and a stake moved to another overlay (also
+# back to an older one, by reusing its nonce), so the LATEST OverlayChanged per overlay is the start.
+# StakeUpdated (owner indexed; data: committedStake, potentialStake, overlay, lastUpdatedBlockNumber,
+# height) is used only for an overlay without any OverlayChanged, earliest first.
+# previous: the table from the last read; a newer OverlayChanged replaces its row
 stake_starts <- function(logs, previous = NULL, overlay_logs = NULL) {
-  part <- function(l, word) if (is.null(l) || nrow(l) == 0) NULL else
+  empty <- data.frame(overlay = character(0), block = numeric(0), time = as.POSIXct(character(0), tz = "UTC"))
+  part <- function(l, word) if (is.null(l) || nrow(l) == 0) empty else
     data.frame(overlay = tolower(abi_word(l$data, word)), block = l$block, time = l$time)
-  starts <- rbind(data.frame(overlay = character(0), block = numeric(0), time = as.POSIXct(character(0), tz = "UTC")),
-                  previous, part(logs, 3), part(overlay_logs, 2))
-  starts <- starts[order(starts$block), ]
-  starts[!duplicated(starts$overlay), ]
+  moved <- part(overlay_logs, 2)
+  moved <- moved[order(moved$block, decreasing = TRUE), ]
+  moved <- moved[!duplicated(moved$overlay), ]
+  starts <- rbind(moved, if (is.null(previous)) empty else previous[!(previous$overlay %in% moved$overlay), ])
+  added <- part(logs, 3)
+  added <- added[order(added$block), ]
+  added <- added[!duplicated(added$overlay) & !(added$overlay %in% starts$overlay), ]
+  rbind(starts, added)
 }
 
 # Staking.stakes(owner) for every owner: overlay, committedStake, potentialStake,
@@ -249,6 +255,8 @@ read_oracle <- function() {
 # stakes are re-read in full every time, because freezes, withdrawals and height changes do not
 # all emit events
 fetch_chain_data <- function(previous = NULL) {
+  # data read by an older version of this code has no stake starts: read everything again once
+  if (!is.null(previous) && is.null(previous$stake_starts)) previous <- NULL
   head_block <- hex_to_number(rpc_call("eth_blockNumber")) - chain_confirmations
   head <- rpc_call("eth_getBlockByNumber", list(sprintf("0x%x", head_block), FALSE))
   head_time <- as.POSIXct(hex_to_number(head$timestamp), origin = "1970-01-01", tz = "UTC")
@@ -305,7 +313,7 @@ fetch_chain_data <- function(previous = NULL) {
        stake_starts = starts, stakes = add_stake_start(read_stakes(owners, price, head_block), starts), oracle = read_oracle())
 }
 
-# each stake's first StakeUpdated: staked_block and staked_time (NA if not seen)
+# when stake arrived at each stake's overlay (stake_starts()): staked_block and staked_time (NA if not seen)
 add_stake_start <- function(stakes, starts) {
   first <- match(stakes$overlay, starts$overlay)
   stakes$staked_block <- starts$block[first]

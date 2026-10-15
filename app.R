@@ -528,7 +528,9 @@ ui <-
                 "within the days set in the sidebar or were first staked in that time, in every neighbourhood at the sidebar's radius, and assumes each of ",
                 "them reveals a matching hash with probability q (participation, below). It then extends today's price at the ",
                 "expected change per day. Participation is a calibrated parameter: the value that makes the model reproduce ",
-                "the observed price change, not a measured reveal rate. The chain's own figure, matching reveals per claimed round, ",
+                "the observed price change with the nodes that revealed in that time, not a measured reveal rate. Nodes first ",
+                "staked in that time that have not revealed yet are left out of the fit but counted in the projection, so the ",
+                "projected change can differ from the observed one. The chain's own figure, matching reveals per claimed round, ",
                 "is shown under the boxes. The 2-second option applies 2-second blocks from today, with no rescaling of the ",
                 "price; GIP-153 plans the change for about December 2026."),
               layout_column_wrap(

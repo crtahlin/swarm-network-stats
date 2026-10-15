@@ -339,13 +339,19 @@ check("chain - owners are addresses", all(grepl("^0x[0-9a-f]{40}$", updated$owne
 # eth_calls a batch leaves unanswered are sent again
 fake_rpc$drop_calls <- 7
 retried <- tryCatch(read_stakes(chain$owners, chain$price, chain$to_block), error = function(e) e)
+# a cache from before stake starts existed is read again in full, not extended
+legacy <- chain; legacy$stake_starts <- NULL
+check("chain - data without stake starts is read again in full", same_data(fetch_chain_data(legacy), chain) &&
+        identical(fetch_chain_data(legacy)$stake_starts$block, chain$stake_starts$block))
 check("chain - refused calls in a batch are retried", !inherits(retried, "error") &&
         isTRUE(all.equal(add_stake_start(retried, chain$stake_starts), chain$stakes)))
 # the first stake of each overlay: its earliest StakeUpdated, kept across an incremental read
 raw_stake <- Filter(function(l) l$topics[[1]] == chain_topics$stake_updated, chain_fixture$logs[[tolower(chain_contracts$staking$address)]])
 first_block <- tapply(vapply(raw_stake, function(l) hex_to_number(l$blockNumber), 0),
                       vapply(raw_stake, function(l) tolower(substr(l$data, 131, 194)), ""), min)
-check("chain - each overlay's first stake is its earliest StakeUpdated",
+# (the fixture was recorded without OverlayChanged logs, so a stake moved to its overlay without
+# adding stake has no start here; the live chain has one for every stake)
+check("chain - without OverlayChanged, an overlay's start is its earliest StakeUpdated",
       all(chain$stakes$staked_block == first_block[chain$stakes$overlay], na.rm = TRUE) && sum(!is.na(chain$stakes$staked_block)) > 0 &&
         identical(updated$stake_starts$block[match(chain$stakes$overlay, updated$stake_starts$overlay)], chain$stakes$staked_block))
 # an overlay a stake moved to without adding stake appears only in OverlayChanged; the earliest event wins
@@ -355,7 +361,13 @@ su <- data.frame(block = c(10, 20), time = as.POSIXct(c(1, 2), origin = "1970-01
 oc <- data.frame(block = c(15, 5), time = as.POSIXct(c(1.5, 0.5), origin = "1970-01-01", tz = "UTC"), topic1 = NA,
                  data = paste0("0x", word("1"), c(word("cc"), word("bb"))))
 ss <- stake_starts(su, NULL, oc)
-check("chain - first stake from StakeUpdated and OverlayChanged", identical(ss$block[match(c(word("aa"), word("bb"), word("cc")), ss$overlay)], c(10, 5, 15)))
+check("chain - the start is the latest OverlayChanged, else the first StakeUpdated",
+      identical(ss$block[match(c(word("aa"), word("bb"), word("cc")), ss$overlay)], c(10, 5, 15)))
+# a stake that moves away and back to an older overlay starts again at the move back, also across reads
+back <- data.frame(block = 30, time = as.POSIXct(3, origin = "1970-01-01", tz = "UTC"), topic1 = NA, data = paste0("0x", word("1"), word("bb")))
+ss2 <- stake_starts(su[0, ], ss, back)
+check("chain - moving back to an older overlay restarts it", ss2$block[ss2$overlay == word("bb")] == 30 &&
+        ss2$block[ss2$overlay == word("aa")] == 10 && nrow(ss2) == 3)
 
 # a node first staked inside the active window counts as active before it reveals; one staked earlier stays idle
 fresh <- chain
