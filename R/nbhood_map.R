@@ -27,7 +27,9 @@ zorder_xy <- function(nbhoods) {
 # listed in their own neighbourhood. A staked node whose height is greater than the radius is left
 # out: the contract computes depth - height as unsigned 8-bit arithmetic, so its reveal reverts and
 # it cannot play at that depth. Full nodes without an overlay are left out too
-nbhood_members <- function(stakes, latest, dump_nodes, radius) {
+# new_since: a node first staked at or after this time counts as active although it has not revealed
+# yet (it has had little or no chance to play); NULL leaves the rule out
+nbhood_members <- function(stakes, latest, dump_nodes, radius, new_since = NULL) {
   all_staked <- stakes$overlay
   stakes <- stakes[stakes$height <= radius, ]
   reveal <- latest[match(stakes$overlay, latest$overlay), ]
@@ -38,9 +40,13 @@ nbhood_members <- function(stakes, latest, dump_nodes, radius) {
     for (name in path) value <- if (is.null(value)) NULL else value[[name]]
     if (is.null(value)) rep(NA, length(rows)) else value[rows]
   }
+  is_new <- if (is.null(new_since) || is.null(stakes$staked_time)) rep(FALSE, nrow(stakes)) else
+    !is.na(stakes$staked_time) & stakes$staked_time >= new_since
   staked <- data.frame(
     overlay = stakes$overlay,
-    kind = unname(ifelse(!is.na(reveal$round), node_kinds["active"], node_kinds["idle"])),
+    kind = unname(ifelse(!is.na(reveal$round) | is_new, node_kinds["active"], node_kinds["idle"])),
+    new_stake = is_new & is.na(reveal$round),
+    staked_time = if (is.null(stakes$staked_time)) as.POSIXct(NA, tz = "UTC") else stakes$staked_time,
     stake = stakes$stake_bzz, effective_stake = stakes$effective_stake_bzz, height = stakes$height,
     last_reveal = reveal$time, last_round = reveal$round, matched_truth = reveal$matched_truth,
     in_swarmscan = !is.na(in_dump),
@@ -63,6 +69,7 @@ nbhood_members <- function(stakes, latest, dump_nodes, radius) {
     full <- which(dump_nodes$fullNode %in% TRUE & !(dump_nodes$overlay %in% all_staked) & !is.na(dump_nodes$overlay))
     unstaked <- data.frame(
       overlay = dump_nodes$overlay[full], kind = unname(node_kinds["unstaked"]),
+      new_stake = FALSE, staked_time = as.POSIXct(NA, tz = "UTC"),
       stake = NA_real_, effective_stake = NA_real_, height = NA_real_,
       last_reveal = as.POSIXct(NA, tz = "UTC"), last_round = NA_real_, matched_truth = NA,
       in_swarmscan = TRUE,
@@ -84,6 +91,8 @@ nbhood_tiles <- function(members, radius, show_unstaked) {
   count <- function(kind) tabulate(match(members$nbhood[members$kind == kind], nbhoods), nbins = length(nbhoods))
   tiles <- zorder_xy(nbhoods)
   tiles$active <- count(node_kinds[["active"]])
+  # of the active ones, those first staked in the window that have not revealed yet
+  tiles$new <- tabulate(match(members$nbhood[members$kind == node_kinds[["active"]] & members$new_stake %in% TRUE], nbhoods), nbins = length(nbhoods))
   tiles$idle <- count(node_kinds[["idle"]])
   tiles$unstaked <- count(node_kinds[["unstaked"]])
   tiles$not_in_dump <- tabulate(match(members$nbhood[!members$in_swarmscan], nbhoods), nbins = length(nbhoods))
@@ -98,7 +107,8 @@ nbhood_tiles <- function(members, radius, show_unstaked) {
 
 # the hover text for one neighbourhood
 nbhood_summary <- function(tile, show_unstaked) {
-  text <- sprintf("Neighbourhood %s: %d staked and active, %d staked and idle", tile$nbhood, tile$active, tile$idle)
+  text <- sprintf("Neighbourhood %s: %d staked and active%s, %d staked and idle", tile$nbhood, tile$active,
+                  if (isTRUE(tile$new > 0)) sprintf(" (%d newly staked, no reveal yet)", tile$new) else "", tile$idle)
   if (show_unstaked) text <- paste0(text, sprintf(", %d full nodes without stake", tile$unstaked))
   if (tile$not_in_dump > 0) text <- paste0(text, sprintf(". %d of the staked nodes are not listed by swarmscan", tile$not_in_dump))
   paste0(text, ".")

@@ -278,6 +278,7 @@ stakes_table_columns <- c(
   "Height" = "Reserve doubling: how many times the node has doubled its storage",
   "Frozen" = "Whether the stake is currently frozen",
   "Can play" = "Whether the node can take part in the game now: staked at least 2 rounds ago and not frozen",
+  "Staked since (UTC)" = "When stake first arrived at this overlay: its first StakeUpdated or OverlayChanged event, so a stake moved to a new overlay counts from the move. A node first staked within the days set in the sidebar counts as active before its first reveal",
   "Last reveal (UTC)" = "Time of the node's latest reveal within the days set in the sidebar (Active within); empty if it has not played in that time",
   "Last round" = "Round of the node's latest reveal within the days set in the sidebar (Active within); empty if it has not played in that time",
   "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
@@ -307,12 +308,14 @@ map_nodes_columns <- c(
 # columns of the node table under the Nbhood map
 nbhood_nodes_columns <- c(
   "Overlay" = "The node's overlay address",
-  "Kind" = paste0("Staked, active: staked and revealed in the set number of days. Staked, idle: staked, no reveal in that time. ",
+  "Kind" = paste0("Staked, active: staked and revealed in the set number of days, or first staked at this overlay in that time (a new ",
+                  "or moved stake has had little or no chance to play yet). Staked, idle: staked earlier, no reveal in that time. ",
                   "Full, not staked: a full node in the swarmscan dump without stake. Idle also covers stakes that cannot play: ",
-                  "frozen, below the minimum stake, or too new"),
+                  "frozen or below the minimum stake"),
   "Stake (BZZ)" = "The amount deposited; empty for a node without stake",
   "Effective stake (BZZ)" = "What the redistribution game counts: the committed stake at today's price, capped at the deposit, and 0 while frozen",
   "Height" = "Reserve doubling: the node stores 2^height neighbourhoods and is listed in each of them",
+  "Staked since (UTC)" = "When stake first arrived at this overlay: its first StakeUpdated or OverlayChanged event, so a stake moved to a new overlay counts from the move",
   "Last reveal (UTC)" = paste0("Time of the node's latest reveal in the set number of days; empty if it has not played in that time"),
   "Last round" = "Round of that reveal",
   "Matched truth" = "Whether that reveal matched the round's agreed result; empty if the round has not been claimed",
@@ -493,7 +496,8 @@ ui <-
               div(class = "section-label", "Staked nodes per neighbourhood"),
               p("One tile per neighbourhood at the storage radius set in the sidebar. Sister neighbourhoods, ",
                 "the two halves one split would create, sit next to each other. The colour counts staked nodes ",
-                "that revealed in the redistribution game within the days set in the sidebar. 4 (light green) is the number ",
+                "that revealed in the redistribution game within the days set in the sidebar, or were first staked in that time: a new ",
+                "stake counts before its first reveal, because a neighbourhood is drawn only every few days. 4 (light green) is the number ",
                 "of matching reveals per round the price oracle aims for: fewer raise the price, more (dark green) lower it ",
                 "and spread the rewards thinner. A node with reserve doubling stores ",
                 "several neighbourhoods and counts in each, placed with the sidebar radius; this matches the contract when ",
@@ -521,7 +525,7 @@ ui <-
               p("A model, not a forecast. Each round the price oracle draws one neighbourhood; its staked nodes reveal, ",
                 "and the number of matching reveals sets the change: fewer than 4 raise the price, more than 4 lower it, ",
                 "and a round nobody claims counts as the largest rise. The model takes the staked nodes that revealed ",
-                "within the days set in the sidebar, in every neighbourhood at the sidebar's radius, and assumes each of ",
+                "within the days set in the sidebar or were first staked in that time, in every neighbourhood at the sidebar's radius, and assumes each of ",
                 "them reveals a matching hash with probability q (participation, below). It then extends today's price at the ",
                 "expected change per day. Participation is a calibrated parameter: the value that makes the model reproduce ",
                 "the observed price change, not a measured reveal rate. The chain's own figure, matching reveals per claimed round, ",
@@ -982,7 +986,8 @@ server <- function(input, output, session) {
     shiny::validate(shiny::need(isTRUE(input$storageRadius %in% 1:16), "Enter a storage radius from 1 to 16."))
     shiny::validate(shiny::need(isTRUE(input$activeDays > 0 && input$activeDays <= chain_window_days),
                                 paste0("Enter an active period of at most ", chain_window_days, " days.")))
-    nbhood_members(chain_stakes(chain), last_reveals(chain, input$activeDays), swarm_data_polled()$nodes, input$storageRadius)
+    nbhood_members(chain_stakes(chain), last_reveals(chain, input$activeDays), swarm_data_polled()$nodes, input$storageRadius,
+                   new_since = chain$head_time - input$activeDays * 86400)
   })
   nbhood_tiles_reactive <- reactive(nbhood_tiles(nbhood_members_reactive(), input$storageRadius, isTRUE(input$showUnstaked)))
 
@@ -1047,8 +1052,8 @@ server <- function(input, output, session) {
     if (is.na(depth)) depth <- input$storageRadius
     stakes <- chain_stakes(chain)
     latest <- last_reveals(chain, input$activeDays)
-    game_members <- nbhood_members(stakes, latest, NULL, depth)
-    active_stake <- sum(stakes$effective_stake_bzz[stakes$overlay %in% latest$overlay])
+    game_members <- nbhood_members(stakes, latest, NULL, depth, new_since = chain$head_time - input$activeDays * 86400)
+    active_stake <- sum(stakes$effective_stake_bzz[stakes$overlay %in% active_overlays(chain, input$activeDays)])
     list(chain = chain, paid = paid, depth = depth,
          drawn = last_drawn(chain$anchors, chain$truths, selected_nbhood()),
          # the draws of the game neighbourhood when the tile lies inside one, else of the tile
@@ -1117,6 +1122,7 @@ server <- function(input, output, session) {
     shown <- shown[order(match(shown$kind, node_kinds), -shown$effective_stake), ]
     data.frame(overlay = shown$overlay, kind = shown$kind,
                stake = round(shown$stake, 2), effective_stake = round(shown$effective_stake, 2), height = shown$height,
+               staked_since = format(shown$staked_time, "%Y-%m-%d %H:%M", tz = "UTC"),
                last_reveal = format(shown$last_reveal, "%Y-%m-%d %H:%M", tz = "UTC"), last_round = shown$last_round,
                matched_truth = shown$matched_truth, in_swarmscan = shown$in_swarmscan, reachable = shown$reachable,
                country = shown$country, user_agent = shown$user_agent)
@@ -1130,6 +1136,13 @@ server <- function(input, output, session) {
   ###############
   # active staked nodes per neighbourhood at the set radius, as on the Nbhood map
   price_active_counts <- reactive(nbhood_tiles(nbhood_members_reactive(), input$storageRadius, FALSE)$active)
+  # the nodes that revealed in the window, without new stakes that have not played yet: the price
+  # change observed over the window came from these, so the participation is fitted to them
+  price_played_counts <- reactive({
+    members <- nbhood_members_reactive()
+    members$kind[members$new_stake %in% TRUE] <- node_kinds[["idle"]]
+    nbhood_tiles(members, input$storageRadius, FALSE)$active
+  })
   # the same with the what-if extra nodes in each neighbourhood with fewer than 4
   price_nbhood_counts <- reactive({
     shiny::validate(shiny::need(isTRUE(input$extraNodes >= 0), "Enter 0 or more extra nodes."))
@@ -1145,7 +1158,7 @@ server <- function(input, output, session) {
   # the participation that reproduces the observed change with the real counts (no extra nodes),
   # at the measured block time; NA if none does
   fitted_participation <- reactive({
-    fit_participation(price_active_counts(), price_observed(), chain_data()$oracle, price_block_seconds_now())
+    fit_participation(price_played_counts(), price_observed(), chain_data()$oracle, price_block_seconds_now())
   })
   # the participation starts at the fitted value: set once when the data first allows a fit,
   # unless the slider was already moved from 100%
@@ -1245,9 +1258,9 @@ server <- function(input, output, session) {
     block_text <- if (is.na(measured)) "Not enough blocks read to measure the block time; 5 seconds is assumed." else
       sprintf("Blocks took %.2f seconds on average over the window, %s rounds a day.", measured, format_number(round(rounds_per_day(measured), 1)))
     paste(fit_text, block_text, sprintf(
-      "On chain over the same %s days: %s rounds, %s of them claimed (%.1f%% not claimed), with %.2f matching reveals per claimed round on average, against %.2f active staked nodes per neighbourhood.",
+      "On chain over the same %s days: %s rounds, %s of them claimed (%.1f%% not claimed), with %.2f matching reveals per claimed round on average, against %.2f staked nodes per neighbourhood that revealed in that time. The participation is fitted to those; the projection also counts the nodes first staked in that time that have not revealed yet (%.2f per neighbourhood in all).",
       format_number(input$activeDays), format_number(rounds$rounds), format_number(rounds$claimed),
-      100 * (1 - rounds$claimed / max(rounds$rounds, 1)), rounds$mean_matching, mean(price_active_counts())),
+      100 * (1 - rounds$claimed / max(rounds$rounds, 1)), rounds$mean_matching, mean(price_played_counts()), mean(price_active_counts())),
       if (is.na(rounds$truth_depth) || !isTRUE(input$storageRadius %in% 1:16)) "" else if (rounds$truth_depth == input$storageRadius)
         sprintf("The claimed truths were at depth %d, the radius set in the sidebar.", rounds$truth_depth) else
         sprintf("Warning: the claimed truths were at depth %d, but the sidebar radius is %d. The model counts nodes per neighbourhood at the sidebar radius, so set it to %d for these counts to match the game.",
@@ -1746,6 +1759,7 @@ server <- function(input, output, session) {
       height = stakes$height,
       frozen = stakes$frozen,
       can_play = stakes$can_play,
+      staked_since = format(stakes$staked_time, "%Y-%m-%d %H:%M", tz = "UTC"),
       last_reveal = format(reveal$time, "%Y-%m-%d %H:%M", tz = "UTC"),
       last_round = reveal$round,
       matched_truth = reveal$matched_truth,
